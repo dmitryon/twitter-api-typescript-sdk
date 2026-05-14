@@ -8,11 +8,31 @@ export interface AuthHeader {
   Authorization: string;
 }
 
+export interface AuthState {
+  [key: string]: string | undefined;
+}
+
+export interface OAuth1AuthState extends AuthState {
+  request_token?: string;
+  request_token_secret?: string;
+}
+
+export interface OAuth2AuthState extends AuthState {
+  code_verifier?: string;
+  state?: string;
+}
+
 export abstract class AuthClient {
   abstract getAuthHeader(
-    url?: string,
-    method?: string
-  ): Promise<AuthHeader> | AuthHeader;
+    context?: {
+      url?: string;
+      method?: string;
+      body?: string;
+    }
+  ): Promise<AuthHeader>;
+  
+  abstract getAuthState(): AuthState;
+  abstract setAuthState(state: AuthState): void;
 }
 
 export interface TwitterNextToken {
