@@ -3,8 +3,11 @@
 
 import crypto from "crypto";
 import { buildQueryString, basicAuthHeader } from "./utils";
-import { AuthClient, AuthHeader } from "./types";
+import { AuthClient, AuthHeader, OAuth2AuthState } from "./types";
 import { RequestOptions, rest } from "./request";
+import { TokenRefreshStrategy, InMemoryTokenRefreshStrategy } from "./TokenRefreshStrategy";
+export { TokenRefreshStrategy, InMemoryTokenRefreshStrategy } from "./TokenRefreshStrategy";
+export { FileLockTokenRefreshStrategy } from "./TokenRefreshStrategy";
 
 export type OAuth2Scopes =
   | "tweet.read"
@@ -24,21 +27,33 @@ export type OAuth2Scopes =
   | "block.read"
   | "block.write"
   | "bookmark.read"
-  | "bookmark.write";
+  | "bookmark.write"
+  | "dm.read"
+  | "dm.write"
+  | "media.write"
+  | "timeline.read";
 
 export interface OAuth2UserOptions {
   /** Can be found in the developer portal under the header "Client ID". */
   client_id: string;
-  /** If you have selected an App type that is a confidential client you will be provided with a “Client Secret” under “Client ID” in your App’s keys and tokens section. */
+  /** If you have selected an App type that is a confidential client you will be provided with a "Client Secret" under "Client ID" in your App's keys and tokens section. */
   client_secret?: string;
-  /**Your callback URL. This value must correspond to one of the Callback URLs defined in your App’s settings. For OAuth 2.0, you will need to have exact match validation for your callback URL. */
+  /**Your callback URL. This value must correspond to one of the Callback URLs defined in your App's settings. For OAuth 2.0, you will need to have exact match validation for your callback URL. */
   callback: string;
   /** Scopes allow you to set granular access for your App so that your App only has the permissions that it needs. To learn more about what scopes map to what endpoints, view our {@link https://developer.twitter.com/en/docs/authentication/guides/v2-authentication-mapping authentication mapping guide}. */
   scopes: OAuth2Scopes[];
+  /** Base URL for Twitter API */
+  base_url?: string;
+  /** Base URL for Twitter authorization */
+  auth_base_url?: string;
   /** Overwrite request options for all endpoints */
   request_options?: Partial<RequestOptions>;
   /** Set the auth token */
   token?: Token;
+  /** Callback invoked when the token is automatically refreshed */
+  onTokenRefresh?: (token: Token) => void | Promise<void>;
+  /** Strategy for coordinating token refresh. Defaults to in-memory locking. */
+  refreshStrategy?: TokenRefreshStrategy;
 }
 
 export type GenerateAuthUrlOptions =
@@ -90,7 +105,7 @@ interface GetTokenResponse {
   scope?: string;
 }
 
-interface Token extends Omit<GetTokenResponse, "expires_in"> {
+export interface Token extends Omit<GetTokenResponse, "expires_in"> {
   /** Date that the access_token will expire at.  */
   expires_at?: number;
 }
@@ -113,10 +128,14 @@ export class OAuth2User implements AuthClient {
   #options: OAuth2UserOptions;
   #code_verifier?: string;
   #code_challenge?: string;
+  #state?: string;
+  #refreshStrategy: TokenRefreshStrategy;
+  
   constructor(options: OAuth2UserOptions) {
     const { token, ...defaultOptions } = options;
     this.#options = defaultOptions;
     this.token = token;
+    this.#refreshStrategy = options.refreshStrategy ?? new InMemoryTokenRefreshStrategy();
   }
 
   /**
@@ -124,7 +143,7 @@ export class OAuth2User implements AuthClient {
    */
   async refreshAccessToken(): Promise<{ token: Token }> {
     const refresh_token = this.token?.refresh_token;
-    const { client_id, client_secret, request_options } = this.#options;
+    const { client_id, client_secret, base_url = "https://api.x.com", request_options } = this.#options;
     if (!client_id) {
       throw new Error("client_id is required");
     }
@@ -133,6 +152,7 @@ export class OAuth2User implements AuthClient {
     }
     const data = await rest<GetTokenResponse>({
       ...request_options,
+      base_url,
       endpoint: `/2/oauth2/token`,
       params: {
         client_id,
@@ -167,8 +187,7 @@ export class OAuth2User implements AuthClient {
    * Request an access token
    */
   async requestAccessToken(code?: string): Promise<{ token: Token }> {
-    const { client_id, client_secret, callback, request_options } =
-      this.#options;
+    const { client_id, client_secret, callback, base_url = "https://api.x.com", request_options } = this.#options;
     const code_verifier = this.#code_verifier;
     if (!client_id) {
       throw new Error("client_id is required");
@@ -185,6 +204,7 @@ export class OAuth2User implements AuthClient {
     };
     const data = await rest<GetTokenResponse>({
       ...request_options,
+      base_url,
       endpoint: `/2/oauth2/token`,
       params,
       method: "POST",
@@ -205,7 +225,7 @@ export class OAuth2User implements AuthClient {
    * Revoke an access token
    */
   async revokeAccessToken(): Promise<RevokeAccessTokenResponse> {
-    const { client_id, client_secret, request_options } = this.#options;
+    const { client_id, client_secret, base_url = "https://api.x.com", request_options } = this.#options;
     const access_token = this.token?.access_token;
     const refresh_token = this.token?.refresh_token;
     if (!client_id) {
@@ -229,6 +249,7 @@ export class OAuth2User implements AuthClient {
     }
     return rest({
       ...request_options,
+      base_url,
       endpoint: `/2/oauth2/revoke`,
       params,
       method: "POST",
@@ -243,9 +264,12 @@ export class OAuth2User implements AuthClient {
   }
 
   generateAuthURL(options: GenerateAuthUrlOptions): string {
-    const { client_id, callback, scopes } = this.#options;
+    const { client_id, callback, scopes, auth_base_url = "https://x.com" } = this.#options;
     if (!callback) throw new Error("callback required");
     if (!scopes) throw new Error("scopes required");
+    
+    this.#state = options.state;
+    
     if (options.code_challenge_method === "s256") {
       const code_verifier = base64URLEncode(crypto.randomBytes(32));
       this.#code_verifier = code_verifier;
@@ -254,8 +278,9 @@ export class OAuth2User implements AuthClient {
       this.#code_challenge = options.code_challenge;
       this.#code_verifier = options.code_challenge;
     }
+    
     const code_challenge = this.#code_challenge;
-    const url = new URL("https://twitter.com/i/oauth2/authorize");
+    const url = new URL(`${auth_base_url}/i/oauth2/authorize`);
     url.search = buildQueryString({
       ...options,
       client_id,
@@ -265,14 +290,35 @@ export class OAuth2User implements AuthClient {
       code_challenge_method: options.code_challenge_method || "plain",
       code_challenge,
     });
+    
     return url.toString();
+  }
+
+  getAuthState(): OAuth2AuthState {
+    return {
+      code_verifier: this.#code_verifier,
+      state: this.#state
+    };
+  }
+
+  setAuthState(state: OAuth2AuthState): void {
+    this.#code_verifier = state.code_verifier;
+    this.#state = state.state;
   }
 
   async getAuthHeader(): Promise<AuthHeader> {
     if (!this.token?.access_token) throw new Error("access_token is required");
-    if (this.isAccessTokenExpired()) await this.refreshAccessToken();
+    if (this.isAccessTokenExpired()) {
+      const doRefresh = async (): Promise<Token> => {
+        const { token } = await this.refreshAccessToken();
+        await this.#options.onTokenRefresh?.(token);
+        return token;
+      };
+      this.token = await this.#refreshStrategy.execute(this.token, doRefresh);
+    }
+
     return {
-      Authorization: `Bearer ${this.token.access_token}`,
+      Authorization: `Bearer ${this.token.access_token}`
     };
   }
 }
