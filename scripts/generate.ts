@@ -165,7 +165,6 @@ function buildClasses(classes: {
 }
 
 export async function generate(): Promise<void> {
-  const version = process.argv[2];
   const specFileIndex = process.argv.indexOf("--specFile");
   let specFilePath: string;
   if (specFileIndex > -1) specFilePath = process.argv[specFileIndex + 1];
@@ -183,6 +182,7 @@ export async function generate(): Promise<void> {
       x.json()
     );
   }
+  const version = spec.info.version;
   const openApiTs = (await import("openapi-typescript")).default;
   let openApiTypes = await openApiTs(spec);
 
@@ -244,7 +244,7 @@ import { OAuth2Bearer } from "../auth";\n\n`;
       const okResponse = responses["200"] as ResponseObject | undefined;
       const responseBody = (
         responses
-          ? okResponse?.content
+          ? okResponse?.content?.["application/json"]?.schema
             ? okResponse.content["application/json"].schema
             : undefined
           : undefined

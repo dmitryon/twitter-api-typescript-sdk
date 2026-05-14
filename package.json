@@ -1,6 +1,6 @@
 {
   "name": "twitter-api-sdk",
-  "version": "2.148.0",
+  "version": "2.163.0",
   "description": "A TypeScript SDK for the Twitter API",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc",
     "prebuild": "yarn clean",
-    "generate": "ts-node scripts/generate.ts 2.0.0 --specFile ../api_spec/openapi.json",
+    "generate": "ts-node scripts/generate.ts --specFile ../api_spec/openapi.json",
     "prepublishOnly": "yarn test",
     "build:watch": "tsc --watch",
     "test": "jest",

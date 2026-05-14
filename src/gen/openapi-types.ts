@@ -7,10 +7,6 @@
  */
 
 export interface paths {
-  "/2/account_activity/replay/webhooks/{webhook_id}/subscriptions/all": {
-    /** Creates a replay job to retrieve activities from up to the past 5 days for all subscriptions associated with a given webhook. */
-    post: operations["createAccountActivityReplayJob"];
-  };
   "/2/account_activity/subscriptions/count": {
     /** Retrieves a count of currently active Account Activity subscriptions. */
     get: operations["getAccountActivitySubscriptionCount"];
@@ -38,12 +34,96 @@ export interface paths {
     get: operations["getActivitySubscriptions"];
     /** Creates a subscription for an X activity event */
     post: operations["createActivitySubscription"];
+    /** Deletes multiple subscriptions for X activity events by their IDs */
+    delete: operations["deleteActivitySubscriptionsByIds"];
   };
   "/2/activity/subscriptions/{subscription_id}": {
     /** Updates a subscription for an X activity event */
     put: operations["updateActivitySubscription"];
     /** Deletes a subscription for an X activity event */
     delete: operations["deleteActivitySubscription"];
+  };
+  "/2/chat/conversations": {
+    /** Retrieves a list of Chat conversations for the authenticated user's inbox. */
+    get: operations["getChatConversations"];
+  };
+  "/2/chat/conversations/group": {
+    /** Creates a new encrypted Chat group conversation on behalf of the authenticated user. */
+    post: operations["createChatConversation"];
+  };
+  "/2/chat/conversations/group/initialize": {
+    /**
+     * Initializes a new XChat group conversation and returns a unique conversation ID.
+     *
+     * This endpoint is the first step in creating a group chat. The returned conversation_id
+     * should be used in subsequent calls to POST /chat/conversations/group to fully create and
+     * configure the group with members, admins, encryption keys, and other settings.
+     *
+     * **Workflow:**
+     * 1. Call this endpoint to get a `conversation_id`
+     * 2. Use that `conversation_id` when calling `POST /chat/conversations/group` to create the group
+     *
+     * **Authentication:**
+     * - Requires OAuth 1.0a User Context or OAuth 2.0 User Context
+     * - Required scope: `dm.write`
+     */
+    post: operations["initializeChatGroup"];
+  };
+  "/2/chat/conversations/{id}/keys": {
+    /**
+     * Initializes encryption keys for a Chat conversation. This is the first step
+     * before sending messages in a new 1:1 conversation.
+     *
+     * For 1:1 conversations, provide the recipient's user ID as the conversation_id.
+     * The server constructs the canonical conversation ID from the authenticated user
+     * and recipient.
+     *
+     * The request body must contain the conversation key version and participant keys
+     * (the conversation key encrypted for each participant using their public key).
+     *
+     * **Workflow (1:1 conversation):**
+     * 1. Generate a conversation key using the SDK
+     * 2. Encrypt the key for both participants using their public keys
+     * 3. Call this endpoint to register the keys
+     * 4. Send messages using `POST /chat/conversations/{id}/messages`
+     *
+     * **Authentication:**
+     * - Requires OAuth 1.0a User Context or OAuth 2.0 User Context
+     * - Required scopes: `tweet.read`, `users.read`, `dm.write`
+     */
+    post: operations["initializeChatConversationKeys"];
+  };
+  "/2/chat/conversations/{id}/members": {
+    /** Adds one or more members to an existing encrypted Chat group conversation, rotating the conversation key. */
+    post: operations["addChatGroupMembers"];
+  };
+  "/2/chat/conversations/{id}/messages": {
+    /** Sends an encrypted message to a specific Chat conversation. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient. */
+    post: operations["sendChatMessage"];
+  };
+  "/2/chat/conversations/{id}/read": {
+    /** Marks a specific Chat conversation as read on behalf of the authenticated user. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient. */
+    post: operations["markChatConversationRead"];
+  };
+  "/2/chat/conversations/{id}/typing": {
+    /** Sends a typing indicator to a specific Chat conversation on behalf of the authenticated user. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient. */
+    post: operations["sendChatTypingIndicator"];
+  };
+  "/2/chat/media/upload/initialize": {
+    /** Initializes an XChat media upload session. */
+    post: operations["chatMediaUploadInitialize"];
+  };
+  "/2/chat/media/upload/{id}/append": {
+    /** Appends media data to an XChat upload session. */
+    post: operations["chatMediaUploadAppend"];
+  };
+  "/2/chat/media/upload/{id}/finalize": {
+    /** Finalizes an XChat media upload session. */
+    post: operations["chatMediaUploadFinalize"];
+  };
+  "/2/chat/media/{id}/{media_hash_key}": {
+    /** Downloads encrypted media bytes from an XChat conversation. The response body contains raw binary bytes. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient. */
+    get: operations["chatMediaDownload"];
   };
   "/2/communities/search": {
     /** Retrieves a list of Communities matching the specified search query. */
@@ -63,13 +143,27 @@ export interface paths {
     /** Retrieves details of a specific Compliance Job by its ID. */
     get: operations["getComplianceJobsById"];
   };
+  "/2/connections": {
+    /** Returns active and historical streaming connections with disconnect reasons for the authenticated application. */
+    get: operations["getConnectionHistory"];
+    /** Terminates multiple streaming connections by their UUIDs for the authenticated application. */
+    delete: operations["deleteConnectionsByUuids"];
+  };
   "/2/connections/all": {
     /** Terminates all active streaming connections for the authenticated application. */
     delete: operations["deleteAllConnections"];
   };
+  "/2/connections/{endpoint_id}": {
+    /** Terminates all streaming connections for a specific endpoint ID for the authenticated application. */
+    delete: operations["deleteConnectionsByEndpoint"];
+  };
   "/2/dm_conversations": {
     /** Initiates a new direct message conversation with specified participants. */
     post: operations["createDirectMessagesConversation"];
+  };
+  "/2/dm_conversations/media/{dm_id}/{media_id}/{resource_id}": {
+    /** Downloads media attached to a legacy Direct Message. The requesting user must be a participant in the conversation containing the specified DM event. The response body contains raw binary bytes. */
+    get: operations["dmConversationsMediaDownload"];
   };
   "/2/dm_conversations/with/{participant_id}/dm_events": {
     /** Retrieves direct message events for a specific conversation. */
@@ -191,6 +285,14 @@ export interface paths {
     /** Retrieves details of a specific Media file by its media key. */
     get: operations["getMediaByMediaKey"];
   };
+  "/2/news/search": {
+    /** Retrieves a list of News stories matching the specified search query. */
+    get: operations["searchNews"];
+  };
+  "/2/news/{id}": {
+    /** Retrieves news story by its ID. */
+    get: operations["getNews"];
+  };
   "/2/notes": {
     /** Creates a community note endpoint for LLM use case. */
     post: operations["createCommunityNotes"];
@@ -242,7 +344,7 @@ export interface paths {
   "/2/tweets": {
     /** Retrieves details of multiple Posts by their IDs. */
     get: operations["getPostsByIds"];
-    /** Creates a new Post for the authenticated user, or edits an existing Post when edit_options are provided. */
+    /** Creates a new Post for the authenticated user, or edits an existing Post when edit_options are provided. Supports paid partnership disclosure via the paid_partnership field. */
     post: operations["createPosts"];
   };
   "/2/tweets/analytics": {
@@ -379,6 +481,10 @@ export interface paths {
     /** Retrieves personalized trending topics for the authenticated user. */
     get: operations["getTrendsPersonalizedTrends"];
   };
+  "/2/users/public_keys": {
+    /** Returns the public keys and Juicebox configuration for the specified users. */
+    get: operations["getUsersPublicKeys"];
+  };
   "/2/users/reposts_of_me": {
     /** Retrieves a list of Posts that repost content from the authenticated user. */
     get: operations["getUsersRepostsOfMe"];
@@ -390,6 +496,10 @@ export interface paths {
   "/2/users/{id}": {
     /** Retrieves details of a specific User by their ID. */
     get: operations["getUsersById"];
+  };
+  "/2/users/{id}/affiliates": {
+    /** Retrieves a list of Users who are affiliated with a specific organization User by their ID. */
+    get: operations["getUsersAffiliates"];
   };
   "/2/users/{id}/blocking": {
     /** Retrieves a list of Users blocked by the specified User ID. */
@@ -481,6 +591,12 @@ export interface paths {
     /** Causes the authenticated user to unpin a specific List by its ID. */
     delete: operations["unpinList"];
   };
+  "/2/users/{id}/public_keys": {
+    /** Returns the public keys and Juicebox configuration for the specified user. */
+    get: operations["getUsersPublicKey"];
+    /** Registers a user's public key for X Chat encryption. */
+    post: operations["addUserPublicKey"];
+  };
   "/2/users/{id}/retweets": {
     /** Causes the authenticated user to repost a specific Post by its ID. */
     post: operations["repostPost"];
@@ -511,6 +627,10 @@ export interface paths {
     /** Creates a new webhook configuration. */
     post: operations["createWebhooks"];
   };
+  "/2/webhooks/replay": {
+    /** Creates a replay job to retrieve events from up to the past 24 hours for all events delivered or attempted to be delivered to the webhook. */
+    post: operations["createWebhookReplayJob"];
+  };
   "/2/webhooks/{webhook_id}": {
     /** Triggers a CRC check for a given webhook. */
     put: operations["validateWebhooks"];
@@ -521,19 +641,26 @@ export interface paths {
 
 export interface components {
   schemas: {
+    /**
+     * @description The unique identifier of an Activity event.
+     * @example 1146654567674912769
+     */
+    ActivityEventId: string;
     /** @description An activity event or error that can be returned by the x activity streaming API. */
     ActivityStreamingResponse: {
       data?: {
         event_type?: string;
+        event_uuid?: components["schemas"]["ActivityEventId"];
         filter?: components["schemas"]["ActivitySubscriptionFilter"];
-        payload?: {
-          after?: string;
-          before?: string;
-        };
+        payload?: components["schemas"]["ActivityStreamingResponsePayload"];
         tag?: string;
       };
       errors?: components["schemas"]["Problem"][];
     };
+    ActivityStreamingResponsePayload:
+      | components["schemas"]["ProfileUpdateActivityResponsePayload"]
+      | components["schemas"]["NewsActivityResponsePayload"]
+      | components["schemas"]["FollowActivityResponsePayload"];
     /** @description An XActivity subscription. */
     ActivitySubscription: {
       /** Format: date-time */
@@ -549,13 +676,27 @@ export interface components {
     ActivitySubscriptionCreateRequest: {
       /** @enum {string} */
       event_type:
-        | "ProfileBioUpdate"
-        | "ProfilePictureUpdate"
-        | "ProfileBannerPictureUpdate"
-        | "ProfileScreennameUpdate"
-        | "ProfileGeoUpdate"
-        | "ProfileUrlUpdate"
-        | "ProfileVerifiedBadgeUpdate";
+        | "profile.update.bio"
+        | "profile.update.profile_picture"
+        | "profile.update.banner_picture"
+        | "profile.update.screenname"
+        | "profile.update.geo"
+        | "profile.update.url"
+        | "profile.update.verified_badge"
+        | "profile.update.affiliate_badge"
+        | "profile.update.handle"
+        | "news.new"
+        | "follow.follow"
+        | "follow.unfollow"
+        | "spaces.start"
+        | "spaces.end"
+        | "chat.received"
+        | "chat.sent"
+        | "chat.conversation_join"
+        | "dm.sent"
+        | "dm.received"
+        | "dm.indicate_typing"
+        | "dm.read";
       filter: components["schemas"]["ActivitySubscriptionFilter"];
       tag?: string;
       webhook_id?: components["schemas"]["WebhookConfigId"];
@@ -587,19 +728,27 @@ export interface components {
         total_subscriptions?: number;
       };
     };
-    /** @description An XAA subscription. */
+    /** @description An XAA subscription filter. */
     ActivitySubscriptionFilter: {
+      /**
+       * @description Optional direction filter for directional events.
+       * @enum {string}
+       */
+      direction?: "inbound" | "outbound";
+      keyword?: components["schemas"]["Keyword"];
       user_id?: components["schemas"]["UserId"];
     };
     ActivitySubscriptionGetResponse: {
       data?: components["schemas"]["ActivitySubscription"][];
       errors?: components["schemas"]["Problem"][];
       meta?: {
+        /** @description Token to retrieve the next page of results. */
+        next_token?: string;
         /**
          * Format: int32
-         * @description Number of active subscriptions.
+         * @description Number of active subscriptions returned in response.
          */
-        total_subscriptions?: number;
+        result_count?: number;
       };
     };
     /**
@@ -682,6 +831,11 @@ export interface components {
       creator_subscriptions?: "Any"[];
       x_subscriptions?: "Any"[];
     };
+    /**
+     * Format: binary
+     * @description Raw binary data bytes.
+     */
+    BinaryPayload: string;
     BookmarkAddRequest: {
       tweet_id: components["schemas"]["TweetId"];
     };
@@ -721,6 +875,340 @@ export interface components {
     CashtagFields: {
       /** @example TWTR */
       tag: string;
+    };
+    /** @description Cryptographic signature for a chat action. */
+    ChatActionSignature: {
+      /** @description Base64-encoded message event detail. */
+      encoded_message_event_detail?: string;
+      message_event_signature?: components["schemas"]["ChatMessageEventSignature"];
+      /** @description ID of the message being signed. */
+      message_id?: string;
+      /** @description Cryptographic signature payload. */
+      signature_payload?: string;
+    };
+    ChatAddGroupMembersRequest: {
+      /** @description Cryptographic signatures for the add-members action. */
+      action_signatures?: components["schemas"]["ChatActionSignature"][];
+      /** @description Version of the new rotated conversation key. */
+      conversation_key_version?: string;
+      /** @description Encrypted conversation keys for each new participant after key rotation. */
+      conversation_participant_keys?: components["schemas"]["ChatConversationParticipantKey"][];
+      /** @description Re-encrypted group avatar URL with new conversation key. */
+      encrypted_avatar_url?: string;
+      /** @description Re-encrypted group title with new conversation key. */
+      encrypted_title?: string;
+      /** @description List of user IDs to add to the group conversation. */
+      user_ids: string[];
+    };
+    ChatAddGroupMembersResponse: {
+      /** @description Sequence ID of the conversation key change event. */
+      conversation_key_change_sequence_id?: string;
+      /** @description List of all current member IDs in the conversation. */
+      current_member_ids?: string[];
+    };
+    ChatAddPublicKeyRequest: {
+      /** @description When true, the server generates a new version. */
+      generate_version?: boolean;
+      /** @description Public key registration payload. */
+      public_key: {
+        /** @description Signature over the identity public key. */
+        identity_public_key_signature?: string;
+        /** @description Identity public key (base64 encoded). */
+        public_key?: string;
+        /** @description Fingerprint of the identity public key. */
+        public_key_fingerprint?: string;
+        /** @description Registration method for the public key. */
+        registration_method?: string;
+        /** @description Signing public key (base64 encoded). */
+        signing_public_key?: string;
+        /** @description Signature over the signing public key. */
+        signing_public_key_signature?: string;
+      };
+      /** @description Public key version. */
+      version: string;
+    };
+    ChatAddPublicKeyResponse: {
+      data?: components["schemas"]["ChatPublicKey"];
+      errors?: components["schemas"]["Problem"][];
+    };
+    /** @description A Chat conversation resource representing either a direct or group conversation. */
+    ChatConversation: {
+      /** @description User IDs of group admins. Only present for group conversations. */
+      admin_ids?: string[];
+      /** @description ISO 8601 timestamp when the group was created. Only present for group conversations. */
+      created_at?: string;
+      /** @description URL for the group avatar. Only present for group conversations. */
+      group_avatar_url?: string;
+      /** @description Encrypted group name. Only present for group conversations. */
+      group_name?: string;
+      /** @description The unique identifier for this conversation. */
+      id: string;
+      /** @description Whether notifications are muted for this conversation. */
+      is_muted?: boolean;
+      /** @description User IDs of group members. Only present for group conversations. */
+      member_ids?: string[];
+      /** @description Message time-to-live in milliseconds. */
+      message_ttl_msec?: string;
+      /** @description Array of user IDs who are participants in this conversation. */
+      participant_ids?: string[];
+      /** @description Whether screen capture blocking is enabled for this conversation. */
+      screen_capture_blocking_enabled?: boolean;
+      /** @description Whether screen capture detection is enabled for this conversation. */
+      screen_capture_detection_enabled?: boolean;
+      /**
+       * @description The type of conversation: 'direct' or 'group'.
+       * @enum {string}
+       */
+      type?: "direct" | "group";
+      /** @description ISO 8601 timestamp when the group was last updated. Only present for group conversations. */
+      updated_at?: string;
+    };
+    /**
+     * @description Identifies the conversation target. Accepts three formats: (1) a recipient user ID for 1:1 conversations (e.g., '1215441834412953600'), (2) a legacy 1:1 conversation ID with two user IDs separated by a dash (e.g., '1215441834412953600-1603419180975409153'), or (3) a group conversation ID prefixed with 'g' (e.g., 'g1234567890123456789'). The server constructs the canonical conversation ID from the authenticated user and recipient when a single user ID is provided.
+     * @example 1215441834412953600
+     */
+    ChatConversationOrRecipientId: string;
+    /** @description A participant's encrypted conversation key. */
+    ChatConversationParticipantKey: {
+      /** @description Conversation key encrypted with this participant's public key. */
+      encrypted_conversation_key?: string;
+      /** @description Version of the participant's public key used for encryption. */
+      public_key_version?: string;
+      /** @description Participant user ID. */
+      user_id?: string;
+    };
+    ChatCreateConversationRequest: {
+      /** @description Cryptographic signatures for the create action. */
+      action_signatures?: components["schemas"]["ChatActionSignature"][];
+      /** @description Base64-encoded key rotation payload. */
+      base64_encoded_key_rotation?: string;
+      /** @description Client-generated conversation ID. */
+      conversation_id: string;
+      /** @description Version of the conversation encryption key. */
+      conversation_key_version: string;
+      /** @description Encrypted conversation keys for each participant. */
+      conversation_participant_keys: components["schemas"]["ChatConversationParticipantKey"][];
+      /** @description User IDs of group admins. Defaults to the creator if omitted. */
+      group_admins?: string[];
+      /** @description URL of the avatar image for the group conversation. */
+      group_avatar_url?: string;
+      /** @description Description for the group conversation. */
+      group_description?: string;
+      /** @description User IDs of group members to include in the conversation. */
+      group_members: string[];
+      /** @description Display name for the group conversation. */
+      group_name?: string;
+      /** @description Message time-to-live in milliseconds. Messages expire after this duration. */
+      ttl_msec?: string;
+    };
+    ChatCreateConversationResponse: {
+      data?: {
+        /** @description The ID of the created conversation. */
+        conversation_id?: string;
+        /** @description Sequence ID of the conversation key change event, if applicable. */
+        conversation_key_change_sequence_id?: string;
+      };
+      errors?: components["schemas"]["Problem"][];
+    };
+    ChatGetConversationsResponse: {
+      /** @description List of conversations in the user's inbox. */
+      data?: components["schemas"]["ChatConversation"][];
+      errors?: components["schemas"]["Problem"][];
+      includes?: components["schemas"]["Expansions"];
+      meta?: {
+        /** @description Whether the user has pending message requests. */
+        has_message_requests?: boolean;
+        /** @description Whether there are more conversations to fetch. */
+        has_more?: boolean;
+        /** @description Token to retrieve the next page of results. */
+        next_token?: string;
+        /** @description The number of conversations returned. */
+        result_count?: number;
+      };
+    };
+    ChatInitializeConversationKeysRequest: {
+      /** @description Cryptographic signatures for the key initialization action. */
+      action_signatures?: components["schemas"]["ChatActionSignature"][];
+      /** @description Base64-encoded key rotation payload for ratchet tree key management. */
+      base64_encoded_key_rotation?: string;
+      /** @description Version of the conversation encryption key (typically a timestamp in milliseconds). */
+      conversation_key_version: string;
+      /** @description The conversation key encrypted for each participant using their public key. */
+      conversation_participant_keys: components["schemas"]["ChatConversationParticipantKey"][];
+    };
+    ChatInitializeConversationKeysResponse: {
+      data?: {
+        /** @description Sequence ID of the conversation key change event. Use this to track key changes in the conversation event stream. */
+        sequence_id?: string;
+      };
+      errors?: components["schemas"]["Problem"][];
+    };
+    ChatInitializeGroupResponse: {
+      data?: {
+        /** @description The unique identifier for the initialized group conversation. This ID is prefixed with 'g' (e.g., 'g1234567890123456789'). Use this ID when calling POST /chat/conversations to create the group. */
+        conversation_id?: string;
+      };
+      errors?: components["schemas"]["Problem"][];
+    };
+    /** @description Key recovery configuration for Juicebox-based key storage. */
+    ChatJuiceboxConfig: {
+      /** @description Raw JSON for key recovery configuration. */
+      key_store_token_map_json?: string;
+      /** @description Maximum guess count for key recovery. */
+      max_guess_count?: number;
+      /** @description Serialized realm state for key recovery. */
+      realm_state_string?: string;
+      /** @description Threshold required to recover the key. */
+      recover_threshold?: number;
+      /** @description Threshold required to register the key. */
+      register_threshold?: number;
+      /** @description Per-realm auth tokens for key recovery. */
+      token_map?: {
+        /** @description Realm identifier. */
+        key?: string;
+        /** @description Realm connection details. */
+        value?: {
+          /** @description Realm URL. */
+          address?: string;
+          /** @description Realm public key. */
+          public_key?: string;
+          /** @description JWT auth token for the realm. */
+          token?: string;
+        };
+      }[];
+    };
+    ChatMarkConversationReadRequest: {
+      /** @description The sequence ID of the last message to mark as read up to. */
+      seen_until_sequence_id: string;
+    };
+    ChatMarkConversationReadResponse: {
+      data?: {
+        /** @description Whether the conversation was marked as read successfully. */
+        success?: boolean;
+      };
+      errors?: components["schemas"]["Problem"][];
+    };
+    ChatMediaUploadAppendRequest: Partial<{
+      /** @description XChat conversation identifier for the upload. */
+      conversation_id: string;
+      media: components["schemas"]["MediaPayloadBinary"];
+      /** @description Media hash key returned from initialize. */
+      media_hash_key: string;
+      segment_index: components["schemas"]["MediaSegments"];
+    }> &
+      Partial<{
+        /** @description XChat conversation identifier for the upload. */
+        conversation_id: string;
+        media: components["schemas"]["MediaPayloadByte"];
+        /** @description Media hash key returned from initialize. */
+        media_hash_key: string;
+        segment_index: components["schemas"]["MediaSegments"];
+      }>;
+    /** @description Request body for finalizing a Chat media upload. */
+    ChatMediaUploadFinalizeRequest: {
+      /** @description XChat conversation identifier for the upload. */
+      conversation_id?: string;
+      /** @description Media hash key returned from initialize. */
+      media_hash_key?: string;
+      /** @description Optional message identifier associated with the upload. */
+      message_id?: string;
+      /** @description Total number of uploaded parts as a numeric string. */
+      num_parts?: string;
+      /** @description Optional TTL for the media in milliseconds. */
+      ttl_msec?: string;
+    };
+    /** @description Response from finalizing a Chat media upload. */
+    ChatMediaUploadFinalizeResponse: {
+      data?: {
+        /** @description Whether the finalize request succeeded. */
+        success: boolean;
+      };
+    };
+    /** @description Request body for initializing a Chat media upload. */
+    ChatMediaUploadInitializeRequest: {
+      /**
+       * @description XChat conversation identifier for the upload.
+       * @example 1603419216513746946:1603419216513746946
+       */
+      conversation_id?: string;
+      /** @description Total size of the media upload in bytes. */
+      total_bytes?: number;
+    };
+    /** @description Response from initializing a Chat media upload. */
+    ChatMediaUploadInitializeResponse: {
+      data?: {
+        /**
+         * @description Conversation id associated with the upload.
+         * @example 1603419216513746946:1603419216513746946
+         */
+        conversation_id: string;
+        /**
+         * @description Media hash key returned by XChat.
+         * @example rByqeHiVlD
+         */
+        media_hash_key: string;
+        /**
+         * @description Resume/session id for the upload.
+         * @example 735401
+         */
+        session_id: string;
+      };
+    };
+    /** @description Message event signature for verification. */
+    ChatMessageEventSignature: {
+      /** @description List of signing key information for message verification. */
+      message_signing_key_info_list?: components["schemas"]["ChatMessageSigningKeyInfo"][];
+      /** @description The version of the public key used for signing. */
+      public_key_version?: string;
+      /** @description The signature of the message event. */
+      signature?: string;
+      /** @description The version of the signature algorithm. */
+      signature_version?: string;
+      /** @description The public key used for signing. */
+      signing_public_key?: string;
+    };
+    /** @description Signing key information for message verification. */
+    ChatMessageSigningKeyInfo: {
+      /** @description The member ID associated with this signing key. */
+      member_id?: string;
+      /** @description The version of the public key. */
+      public_key_version?: string;
+      /** @description The signing public key. */
+      signing_public_key?: string;
+    };
+    /** @description A user's public key with associated key recovery configuration. */
+    ChatPublicKey: {
+      juicebox_config?: components["schemas"]["ChatJuiceboxConfig"];
+      /** @description Identity public key (base64 encoded). */
+      public_key?: string;
+      /** @description Signing public key (base64 encoded). */
+      signing_public_key?: string;
+      /** @description Public key version. */
+      version?: string;
+    };
+    ChatSendMessageRequest: {
+      /** @description Optional conversation token. */
+      conversation_token?: string;
+      /** @description Base64-encoded Thrift MessageCreateEvent containing encrypted message contents. */
+      encoded_message_create_event: string;
+      /** @description Base64-encoded Thrift MessageEventSignature for message verification. */
+      encoded_message_event_signature?: string;
+      /** @description Unique identifier for this message. */
+      message_id: string;
+    };
+    ChatSendMessageResponse: {
+      data?: {
+        /** @description Base64-encoded response message event. */
+        encoded_message_event?: string;
+      };
+      errors?: components["schemas"]["Problem"][];
+    };
+    ChatSendTypingIndicatorResponse: {
+      data?: {
+        /** @description Whether the typing indicator was sent successfully. */
+        success?: boolean;
+      };
+      errors?: components["schemas"]["Problem"][];
     };
     /** @description The ID of the client application */
     ClientAppId: string;
@@ -794,6 +1282,30 @@ export interface components {
     ComplianceJobType: "tweets" | "users";
     /** @description You cannot create a new job if one is already in progress. */
     ConflictProblem: components["schemas"]["Problem"];
+    Connection: {
+      /** @description The IP address of the connected client. */
+      client_ip?: string;
+      /**
+       * Format: date-time
+       * @description The timestamp when the connection was established.
+       */
+      connected_at: string;
+      /**
+       * @description The reason for disconnection, if the connection is inactive.
+       * @example operator_disconnect
+       */
+      disconnect_reason?: string;
+      /**
+       * Format: date-time
+       * @description The timestamp when the connection was disconnected, if applicable.
+       */
+      disconnected_at?: string;
+      /**
+       * @description The name of the streaming endpoint.
+       * @example sample_stream
+       */
+      endpoint_name: string;
+    };
     /** @description A problem that indicates something is wrong with the connection. */
     ConnectionExceptionProblem: components["schemas"]["Problem"] & {
       /** @enum {string} */
@@ -979,6 +1491,11 @@ export interface components {
     };
     /** @description Participants for the DM Conversation. */
     DmParticipants: components["schemas"]["UserId"][];
+    /**
+     * @description The resource identifier of the media file, including file extension.
+     * @example tJg5kUG5RKPi3jNi.jpg
+     */
+    DmResourceId: string;
     DomainRestrictions: {
       /** @description List of whitelisted domains */
       whitelist: string[];
@@ -1105,6 +1622,10 @@ export interface components {
         tag?: components["schemas"]["RuleTag"];
       }[];
     };
+    FollowActivityResponsePayload: {
+      source?: components["schemas"]["User"];
+      target?: components["schemas"]["User"];
+    };
     FoundMediaOrigin: {
       /**
        * @description Unique Identifier of media within provider ( <= 24 characters ))
@@ -1170,6 +1691,15 @@ export interface components {
           /** @description List of whitelisted country codes */
           whitelisted_country_codes: string[];
         };
+    Get2ChatConversationsResponse: {
+      data?: components["schemas"]["ChatConversation"][];
+      errors?: components["schemas"]["Problem"][];
+      includes?: components["schemas"]["Expansions"];
+      meta?: {
+        next_token?: components["schemas"]["NextToken"];
+        result_count?: components["schemas"]["ResultCount"];
+      };
+    };
     Get2CommunitiesIdResponse: {
       data?: components["schemas"]["Community"];
       errors?: components["schemas"]["Problem"][];
@@ -1189,6 +1719,14 @@ export interface components {
       data?: components["schemas"]["ComplianceJob"][];
       errors?: components["schemas"]["Problem"][];
       meta?: {
+        result_count?: components["schemas"]["ResultCount"];
+      };
+    };
+    Get2ConnectionsResponse: {
+      data?: components["schemas"]["Connection"][];
+      errors?: components["schemas"]["Problem"][];
+      meta?: {
+        next_token?: components["schemas"]["NextToken"];
         result_count?: components["schemas"]["ResultCount"];
       };
     };
@@ -1300,6 +1838,10 @@ export interface components {
         result_count?: components["schemas"]["ResultCount"];
       };
     };
+    Get2MarketplaceHandlesHandleAvailabilityResponse: {
+      data?: components["schemas"]["MarketplaceHandleAvailability"];
+      errors?: components["schemas"]["Problem"][];
+    };
     Get2MediaAnalyticsResponse: {
       data?: components["schemas"]["MediaAnalytics"];
       errors?: components["schemas"]["Problem"][];
@@ -1311,6 +1853,17 @@ export interface components {
     Get2MediaResponse: {
       data?: components["schemas"]["Media"][];
       errors?: components["schemas"]["Problem"][];
+    };
+    Get2NewsIdResponse: {
+      data?: components["schemas"]["News"];
+      errors?: components["schemas"]["Problem"][];
+    };
+    Get2NewsSearchResponse: {
+      data?: components["schemas"]["News"][];
+      errors?: components["schemas"]["Problem"][];
+      meta?: {
+        result_count?: components["schemas"]["ResultCount"];
+      };
     };
     Get2NotesSearchNotesWrittenResponse: {
       data?: components["schemas"]["Note"][];
@@ -1532,6 +2085,16 @@ export interface components {
       errors?: components["schemas"]["Problem"][];
       includes?: components["schemas"]["Expansions"];
     };
+    Get2UsersIdAffiliatesResponse: {
+      data?: components["schemas"]["User"][];
+      errors?: components["schemas"]["Problem"][];
+      includes?: components["schemas"]["Expansions"];
+      meta?: {
+        next_token?: components["schemas"]["NextToken"];
+        previous_token?: components["schemas"]["PreviousToken"];
+        result_count?: components["schemas"]["ResultCount"];
+      };
+    };
     Get2UsersIdBlockingResponse: {
       data?: components["schemas"]["User"][];
       errors?: components["schemas"]["Problem"][];
@@ -1642,6 +2205,10 @@ export interface components {
         result_count?: components["schemas"]["ResultCount"];
       };
     };
+    Get2UsersIdPublicKeysResponse: {
+      data?: components["schemas"]["PublicKey"][];
+      errors?: components["schemas"]["Problem"][];
+    };
     Get2UsersIdResponse: {
       data?: components["schemas"]["User"];
       errors?: components["schemas"]["Problem"][];
@@ -1678,6 +2245,10 @@ export interface components {
     };
     Get2UsersPersonalizedTrendsResponse: {
       data?: components["schemas"]["PersonalizedTrend"][];
+      errors?: components["schemas"]["Problem"][];
+    };
+    Get2UsersPublicKeysResponse: {
+      data?: components["schemas"]["PublicKey"];
       errors?: components["schemas"]["Problem"][];
     };
     Get2UsersRepostsOfMeResponse: {
@@ -1737,9 +2308,48 @@ export interface components {
      * @example 1372966999991541762
      */
     JobId: string;
+    /**
+     * @description A keyword to filter on.
+     * @example The President
+     */
+    Keyword: string;
     KillAllConnectionsResponse: {
       data?: {
-        killed_connections?: boolean;
+        failed_kills?: number;
+        results?: {
+          error_message?: string;
+          success?: boolean;
+          uuid?: string;
+        }[];
+        successful_kills?: number;
+      };
+      errors?: components["schemas"]["Problem"][];
+    };
+    KillConnectionsByEndpointResponse: {
+      data?: {
+        failed_kills?: number;
+        results?: {
+          error_message?: string;
+          success?: boolean;
+          uuid?: string;
+        }[];
+        successful_kills?: number;
+      };
+      errors?: components["schemas"]["Problem"][];
+    };
+    KillConnectionsByUuidsRequest: {
+      /** @description Array of connection UUIDs to terminate */
+      uuids: string[];
+    };
+    KillConnectionsByUuidsResponse: {
+      data?: {
+        failed_kills?: number;
+        results?: {
+          error_message?: string;
+          success?: boolean;
+          uuid?: string;
+        }[];
+        successful_kills?: number;
       };
       errors?: components["schemas"]["Problem"][];
     };
@@ -1866,6 +2476,23 @@ export interface components {
        */
       managed: boolean;
     };
+    MarketplaceHandleAvailability: {
+      /**
+       * @description Availability state of the handle.
+       * @example available
+       */
+      availability_state: string;
+      /**
+       * @description Product tier of the handle.
+       * @example premium
+       */
+      product_tier?: string;
+      /**
+       * @description Redirect URL for marketplace handle search.
+       * @example https://handles.x.com/search/jack
+       */
+      redirect_url?: string;
+    };
     Media: {
       height?: components["schemas"]["MediaHeight"];
       media_key?: components["schemas"]["MediaKey"];
@@ -1909,6 +2536,11 @@ export interface components {
      * @enum {string}
      */
     MediaCategorySubtitles: "AmplifyVideo" | "TweetVideo";
+    /**
+     * @description The media hash key returned from the upload initialize step. Alphanumeric characters only.
+     * @example AGgkIbPRTG
+     */
+    MediaHashKey: string;
     /** @description The height of the media in pixels. */
     MediaHeight: number;
     /**
@@ -2073,8 +2705,8 @@ export interface components {
          * @description Number of seconds after which upload session expires.
          */
         expires_after_secs?: number;
-        id: components["schemas"]["MediaId"];
-        media_key: components["schemas"]["MediaKey"];
+        id?: components["schemas"]["MediaId"];
+        media_key?: components["schemas"]["MediaKey"];
         processing_info?: components["schemas"]["ProcessingInfo"];
         /**
          * Format: int32
@@ -2254,6 +2886,55 @@ export interface components {
     };
     /** @description The newest id in this response. */
     NewestId: string;
+    /** @description An AI generated news story. */
+    News: {
+      /** @description The news category. */
+      category?: string;
+      cluster_posts_results?: {
+        post_id?: components["schemas"]["TweetId"];
+      }[];
+      contexts?: {
+        entities?: {
+          events?: string[];
+          organizations?: string[];
+          people?: string[];
+          places?: string[];
+          products?: string[];
+        };
+        finance?: {
+          tickers?: string[];
+        };
+        sports?: {
+          teams?: string[];
+        };
+        topics?: string[];
+      };
+      disclaimer?: string;
+      /** @description The news hook. */
+      hook?: string;
+      keywords?: string[];
+      /**
+       * Format: date-time
+       * @example 2025-7-14T04:35:55Z
+       */
+      last_updated_at_ms?: string;
+      /** @description The headline. */
+      name?: string;
+      rest_id: components["schemas"]["NewsId"];
+      /** @description The news summary. */
+      summary?: string;
+    };
+    NewsActivityResponsePayload: {
+      category?: string;
+      headline?: string;
+      hook?: string;
+      summary?: string;
+    };
+    /**
+     * @description Unique identifier of news story.
+     * @example 2244994945
+     */
+    NewsId: string;
     /** @description The next token. */
     NextToken: string;
     /** @description A problem that indicates the user's rule set is not compliant. */
@@ -2263,6 +2944,7 @@ export interface components {
       id: components["schemas"]["NoteId"];
       info?: components["schemas"]["NoteInfo"];
       post_id: components["schemas"]["TweetId"];
+      scoring_status?: components["schemas"]["NoteScoringStatus"];
       status?: components["schemas"]["NoteRatingStatus"];
       test_result?: components["schemas"]["NoteTestResult"];
     } & {
@@ -2275,6 +2957,29 @@ export interface components {
     NoteClassification:
       | "misinformed_or_potentially_misleading"
       | "not_misleading";
+    /** @description Rating counts for a rater factor bucket. */
+    NoteFactorBucketCounts: {
+      /** @description The count of helpful ratings. */
+      helpful_count?: number;
+      /** @description Helpful tag counts. */
+      helpful_tag_counts?: {
+        /** @description The count of the tag. */
+        tag_count?: number;
+        /** @description The name of the tag. */
+        tag_name?: string;
+      };
+      /** @description The count of not helpful ratings. */
+      not_helpful_count?: number;
+      /** @description Not helpful tag counts. */
+      not_helpful_tag_counts?: {
+        /** @description The count of the tag. */
+        tag_count?: number;
+        /** @description The name of the tag. */
+        tag_name?: string;
+      };
+      /** @description The count of somewhat helpful ratings. */
+      somewhat_helpful_count?: number;
+    };
     /**
      * @description The unique identifier of this Community Note.
      * @example 1146654567674912769
@@ -2283,11 +2988,19 @@ export interface components {
     /** @description A X Community Note is a note on a Post. */
     NoteInfo: {
       classification: components["schemas"]["NoteClassification"];
+      /** @description Whether the note is a media note. */
+      is_media_note?: boolean;
       misleading_tags: components["schemas"]["MisleadingTags"][];
       /** @description The text summary in the Community Note. */
       text: string;
       /** @description Whether the note provided trustworthy links. */
       trustworthy_sources: boolean;
+    };
+    /** @description The rating counts of a Community Note per model. */
+    NoteRatingCountsPerModel: {
+      negative_factor_bucket_counts?: components["schemas"]["NoteFactorBucketCounts"];
+      neutral_factor_bucket_counts?: components["schemas"]["NoteFactorBucketCounts"];
+      positive_factor_bucket_counts?: components["schemas"]["NoteFactorBucketCounts"];
     };
     /**
      * @description Community Note rating status
@@ -2301,6 +3014,17 @@ export interface components {
       | "minimum_ratings_not_met"
       | "needs_more_ratings"
       | "needs_your_help";
+    /** @description The scoring status of a Community Note. */
+    NoteScoringStatus: {
+      /** @description Whether the user has access to the scoring status of the Community Note. */
+      has_access?: boolean;
+      /** @description Rating count stats per model. */
+      rating_counts_per_model?: {
+        /** @description The name of the model. */
+        model_name?: string;
+        value?: components["schemas"]["NoteRatingCountsPerModel"];
+      };
+    };
     /** @description The evaluation result of a community note. */
     NoteTestResult: {
       /** @description Score bucket from the evaluator result. */
@@ -2578,6 +3302,35 @@ export interface components {
       state?: "succeeded" | "in_progress" | "pending" | "failed";
     } & {
       type: unknown;
+    };
+    ProfileUpdateActivityResponsePayload: {
+      after?: string;
+      before?: string;
+    };
+    /** @description Public key information for Chat encryption */
+    PublicKey: {
+      /** @description Identity public key (base64 encoded). */
+      public_key?: string;
+      /** @description Signing public key (base64 encoded). */
+      signing_public_key?: string;
+      /** @description Juicebox configuration. */
+      token_map?: {
+        /** @description Raw JSON for Juicebox SDK. */
+        key_store_token_map_json?: string;
+        /** @description Maximum guess count for Juicebox. */
+        max_guess_count?: number;
+        /** @description List of Juicebox realms. */
+        realms?: {
+          /** @description Realm URL. */
+          address?: string;
+          /** @description Realm identifier. */
+          realm_id?: string;
+          /** @description JWT auth token for realm. */
+          token?: string;
+        }[];
+      };
+      /** @description Public key version. */
+      version?: string;
     };
     /** @description Confirmation that the replay job request was accepted. */
     ReplayJobCreateResponse: {
@@ -3121,6 +3874,15 @@ export interface components {
        * @example en
        */
       lang?: string;
+      /** @description The matched media notes for the post. */
+      matched_media_notes?: {
+        /**
+         * @description The status of the media note match.
+         * @example matched_and_shown
+         */
+        match_status?: string;
+        note_id?: components["schemas"]["NoteId"];
+      };
       /** @description Nonpublic engagement metrics for the Tweet at the time of the request. */
       non_public_metrics?: {
         /**
@@ -3217,6 +3979,12 @@ export interface components {
       /** @description This is deprecated. */
       source?: string;
       suggested_source_links?: components["schemas"]["UrlEntity"][];
+      /** @description Suggested source links and the number of requests that included each link. */
+      suggested_source_links_with_counts?: {
+        /** @description Number of note requests that included the source link. */
+        count?: number;
+        url?: components["schemas"]["UrlEntity"];
+      };
       text?: components["schemas"]["TweetText"];
       username?: components["schemas"]["UserName"];
       withheld?: components["schemas"]["TweetWithheld"];
@@ -3270,18 +4038,51 @@ export interface components {
       geo?: {
         place_id?: string;
       };
+      /** @description Whether this Post contains AI-generated media. When true, the Post will be labeled accordingly. */
+      made_with_ai?: boolean;
       /** @description Media information being attached to created Tweet. This is mutually exclusive from Quote Tweet Id, Poll, and Card URI. */
       media?: {
+        /** @description Call-to-action button rendered on the media entity. Exactly one variant should be set. */
+        call_to_actions?: {
+          /** @description App Install CTA. At least one store id should be provided. */
+          app_install?: {
+            /** @description Apple App Store iPhone app id. */
+            app_store_id?: string;
+            /** @description Apple App Store iPad app id. */
+            ipad_app_store_id?: string;
+            /** @description Google Play Store app id. */
+            play_store_id?: string;
+          };
+          /** @description Visit Site CTA. */
+          visit_site?: {
+            /** @description HTTPS URL the CTA links to. */
+            url: string;
+          };
+          /** @description Watch Now CTA. */
+          watch_now?: {
+            /** @description HTTPS URL the CTA links to. */
+            url: string;
+          };
+        };
+        /** @description Description for the media. Rendered on the Post card for video and Amplify content. */
+        description?: string;
+        /** @description When true, the media's asset URLs do not expire and external syndicated playback is allowed. */
+        embeddable?: boolean;
         /** @description A list of Media Ids to be attached to a created Tweet. */
         media_ids: components["schemas"]["MediaId"][];
+        preview_media_id?: components["schemas"]["MediaId"];
         /** @description A list of User Ids to be tagged in the media for created Tweet. */
         tagged_user_ids?: components["schemas"]["UserId"][];
+        /** @description Title for the media. Rendered on the Post card for video and Amplify content. */
+        title?: string;
       };
       /**
        * @description Nullcasted (promoted-only) Posts do not appear in the public timeline and are not served to followers.
        * @default false
        */
       nullcast?: boolean;
+      /** @description Whether this Post is a paid partnership. When true, the Post will be labeled as a paid promotion. */
+      paid_partnership?: boolean;
       /** @description Poll options for a Tweet with a poll. This is mutually exclusive from Media, Quote Tweet Id, and Card URI. */
       poll?: {
         /**
@@ -3303,6 +4104,8 @@ export interface components {
       quote_tweet_id?: components["schemas"]["TweetId"];
       /** @description Tweet information of the Tweet being replied to. */
       reply?: {
+        /** @description If set to true, reply metadata will be automatically populated. */
+        auto_populate_reply_metadata?: boolean;
         /** @description A list of User Ids to be excluded from the reply Tweet. */
         exclude_reply_user_ids?: components["schemas"]["UserId"][];
         in_reply_to_tweet_id: components["schemas"]["TweetId"];
@@ -4080,6 +4883,19 @@ export interface components {
       };
       errors?: components["schemas"]["Problem"][];
     };
+    WebhookReplayCreateRequest: {
+      /**
+       * @description The oldest (starting) UTC timestamp (inclusive) from which events will be provided, in yyyymmddhhmm format.
+       * @example 202504242000
+       */
+      from_date: string;
+      /**
+       * @description The oldest (starting) UTC timestamp (inclusive) from which events will be provided, in yyyymmddhhmm format.
+       * @example 202504242000
+       */
+      to_date: string;
+      webhook_id: components["schemas"]["WebhookConfigId"];
+    };
   };
   parameters: {
     /** @description A comma separated list of Analytics fields to display. */
@@ -4103,8 +4919,43 @@ export interface components {
       | "shares"
       | "timestamp"
       | "unfollows"
+      | "unlikes"
       | "url_clicks"
       | "user_profile_clicks"
+    )[];
+    /** @description A comma separated list of fields to expand. */
+    ChatConversationExpansionsParameter: (
+      | "admin_ids"
+      | "member_ids"
+      | "participant_ids"
+    )[];
+    /** @description A comma separated list of ChatConversation fields to display. */
+    ChatConversationFieldsParameter: (
+      | "admin_ids"
+      | "created_at"
+      | "group_avatar_url"
+      | "group_name"
+      | "id"
+      | "is_muted"
+      | "member_ids"
+      | "message_ttl_msec"
+      | "participant_ids"
+      | "screen_capture_blocking_enabled"
+      | "screen_capture_detection_enabled"
+      | "type"
+      | "updated_at"
+    )[];
+    /** @description A comma separated list of ChatMessageEvent fields to display. */
+    ChatMessageEventFieldsParameter: (
+      | "conversation_id"
+      | "conversation_token"
+      | "created_at_msec"
+      | "encoded_event"
+      | "id"
+      | "is_trusted"
+      | "message_event_signature"
+      | "previous_id"
+      | "sender_id"
     )[];
     /** @description A comma separated list of Community fields to display. */
     CommunityFieldsParameter: (
@@ -4128,6 +4979,15 @@ export interface components {
       | "type"
       | "upload_expires_at"
       | "upload_url"
+    )[];
+    /** @description A comma separated list of Connection fields to display. */
+    ConnectionFieldsParameter: (
+      | "client_ip"
+      | "connected_at"
+      | "disconnect_reason"
+      | "disconnected_at"
+      | "endpoint_name"
+      | "id"
     )[];
     /** @description A comma separated list of DmConversation fields to display. */
     DmConversationFieldsParameter: "id"[];
@@ -4164,11 +5024,13 @@ export interface components {
     )[];
     /** @description A comma separated list of fields to expand. */
     LikeWithTweetAuthorExpansionsParameter: (
+      | "attachments.media_keys"
       | "liked_tweet_author_id"
       | "liked_tweet_id"
     )[];
     /** @description A comma separated list of LikeWithTweetAuthor fields to display. */
     LikeWithTweetAuthorFieldsParameter: (
+      | "attachments_media_keys"
       | "created_at"
       | "id"
       | "liked_tweet_author_id"
@@ -4187,6 +5049,12 @@ export interface components {
       | "name"
       | "owner_id"
       | "private"
+    )[];
+    /** @description A comma separated list of MarketplaceHandleAvailability fields to display. */
+    MarketplaceHandleAvailabilityFieldsParameter: (
+      | "availability_state"
+      | "product_tier"
+      | "redirect_url"
     )[];
     /** @description A comma separated list of MediaAnalytics fields to display. */
     MediaAnalyticsFieldsParameter: (
@@ -4219,8 +5087,27 @@ export interface components {
       | "variants"
       | "width"
     )[];
+    /** @description A comma separated list of News fields to display. */
+    NewsFieldsParameter: (
+      | "category"
+      | "cluster_posts_results"
+      | "contexts"
+      | "disclaimer"
+      | "hook"
+      | "id"
+      | "keywords"
+      | "name"
+      | "summary"
+      | "updated_at"
+    )[];
     /** @description A comma separated list of Note fields to display. */
-    NoteFieldsParameter: ("id" | "info" | "status" | "test_result")[];
+    NoteFieldsParameter: (
+      | "id"
+      | "info"
+      | "scoring_status"
+      | "status"
+      | "test_result"
+    )[];
     /** @description A comma separated list of PersonalizedTrend fields to display. */
     PersonalizedTrendFieldsParameter: (
       | "category"
@@ -4287,6 +5174,13 @@ export interface components {
       | "id"
       | "options"
       | "voting_status"
+    )[];
+    /** @description A comma separated list of PublicKey fields to display. */
+    PublicKeyFieldsParameter: (
+      | "juicebox_config"
+      | "public_key"
+      | "signing_public_key"
+      | "version"
     )[];
     /** @description A comma separated list of RulesCount fields to display. */
     RulesCountFieldsParameter: (
@@ -4365,6 +5259,7 @@ export interface components {
       | "id"
       | "in_reply_to_user_id"
       | "lang"
+      | "matched_media_notes"
       | "media_metadata"
       | "non_public_metrics"
       | "note_tweet"
@@ -4377,6 +5272,7 @@ export interface components {
       | "scopes"
       | "source"
       | "suggested_source_links"
+      | "suggested_source_links_with_counts"
       | "text"
       | "withheld"
     )[];
@@ -4430,36 +5326,6 @@ export interface components {
 }
 
 export interface operations {
-  /** Creates a replay job to retrieve activities from up to the past 5 days for all subscriptions associated with a given webhook. */
-  createAccountActivityReplayJob: {
-    parameters: {
-      path: {
-        /** The unique identifier for the webhook configuration. */
-        webhook_id: components["schemas"]["WebhookConfigId"];
-      };
-      query: {
-        /** The oldest (starting) UTC timestamp (inclusive) from which events will be provided, in `yyyymmddhhmm` format. */
-        from_date: string;
-        /** The latest (ending) UTC timestamp (exclusive) up to which events will be provided, in `yyyymmddhhmm` format. */
-        to_date: string;
-      };
-    };
-    responses: {
-      /** The request has succeeded. */
-      200: {
-        content: {
-          "application/json": components["schemas"]["ReplayJobCreateResponse"];
-        };
-      };
-      /** The request has failed. */
-      default: {
-        content: {
-          "application/json": components["schemas"]["Error"];
-          "application/problem+json": components["schemas"]["Problem"];
-        };
-      };
-    };
-  };
   /** Retrieves a count of currently active Account Activity subscriptions. */
   getAccountActivitySubscriptionCount: {
     parameters: {};
@@ -4612,7 +5478,14 @@ export interface operations {
   };
   /** Get a list of active subscriptions for XAA */
   getActivitySubscriptions: {
-    parameters: {};
+    parameters: {
+      query: {
+        /** The maximum number of results to return per page. */
+        max_results?: number;
+        /** This parameter is used to get the next 'page' of results. */
+        pagination_token?: components["schemas"]["PaginationToken32"];
+      };
+    };
     responses: {
       /** The request has succeeded. */
       200: {
@@ -4650,6 +5523,30 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["ActivitySubscriptionCreateRequest"];
+      };
+    };
+  };
+  /** Deletes multiple subscriptions for X activity events by their IDs */
+  deleteActivitySubscriptionsByIds: {
+    parameters: {
+      query: {
+        /** Comma-separated list of subscription IDs to delete. */
+        ids: components["schemas"]["ActivitySubscriptionId"][];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ActivitySubscriptionDeleteResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
       };
     };
   };
@@ -4695,6 +5592,364 @@ export interface operations {
       200: {
         content: {
           "application/json": components["schemas"]["ActivitySubscriptionDeleteResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Retrieves a list of Chat conversations for the authenticated user's inbox. */
+  getChatConversations: {
+    parameters: {
+      query: {
+        /** Maximum number of conversations to return. */
+        max_results?: number;
+        /** Token for pagination to retrieve the next page of results. */
+        pagination_token?: string;
+        /** A comma separated list of ChatConversation fields to display. */
+        "chat_conversation.fields"?: components["parameters"]["ChatConversationFieldsParameter"];
+        /** A comma separated list of fields to expand. */
+        expansions?: components["parameters"]["ChatConversationExpansionsParameter"];
+        /** A comma separated list of User fields to display. */
+        "user.fields"?: components["parameters"]["UserFieldsParameter"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatGetConversationsResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Creates a new encrypted Chat group conversation on behalf of the authenticated user. */
+  createChatConversation: {
+    parameters: {};
+    responses: {
+      /** The request has succeeded. */
+      201: {
+        content: {
+          "application/json": components["schemas"]["ChatCreateConversationResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChatCreateConversationRequest"];
+      };
+    };
+  };
+  /**
+   * Initializes a new XChat group conversation and returns a unique conversation ID.
+   *
+   * This endpoint is the first step in creating a group chat. The returned conversation_id
+   * should be used in subsequent calls to POST /chat/conversations/group to fully create and
+   * configure the group with members, admins, encryption keys, and other settings.
+   *
+   * **Workflow:**
+   * 1. Call this endpoint to get a `conversation_id`
+   * 2. Use that `conversation_id` when calling `POST /chat/conversations/group` to create the group
+   *
+   * **Authentication:**
+   * - Requires OAuth 1.0a User Context or OAuth 2.0 User Context
+   * - Required scope: `dm.write`
+   */
+  initializeChatGroup: {
+    parameters: {};
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatInitializeGroupResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /**
+   * Initializes encryption keys for a Chat conversation. This is the first step
+   * before sending messages in a new 1:1 conversation.
+   *
+   * For 1:1 conversations, provide the recipient's user ID as the conversation_id.
+   * The server constructs the canonical conversation ID from the authenticated user
+   * and recipient.
+   *
+   * The request body must contain the conversation key version and participant keys
+   * (the conversation key encrypted for each participant using their public key).
+   *
+   * **Workflow (1:1 conversation):**
+   * 1. Generate a conversation key using the SDK
+   * 2. Encrypt the key for both participants using their public keys
+   * 3. Call this endpoint to register the keys
+   * 4. Send messages using `POST /chat/conversations/{id}/messages`
+   *
+   * **Authentication:**
+   * - Requires OAuth 1.0a User Context or OAuth 2.0 User Context
+   * - Required scopes: `tweet.read`, `users.read`, `dm.write`
+   */
+  initializeChatConversationKeys: {
+    parameters: {
+      path: {
+        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        id: components["schemas"]["ChatConversationOrRecipientId"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatInitializeConversationKeysResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChatInitializeConversationKeysRequest"];
+      };
+    };
+  };
+  /** Adds one or more members to an existing encrypted Chat group conversation, rotating the conversation key. */
+  addChatGroupMembers: {
+    parameters: {
+      path: {
+        /** The Chat group conversation ID. */
+        id: components["schemas"]["ChatConversationOrRecipientId"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatAddGroupMembersResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChatAddGroupMembersRequest"];
+      };
+    };
+  };
+  /** Sends an encrypted message to a specific Chat conversation. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient. */
+  sendChatMessage: {
+    parameters: {
+      path: {
+        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        id: components["schemas"]["ChatConversationOrRecipientId"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      201: {
+        content: {
+          "application/json": components["schemas"]["ChatSendMessageResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChatSendMessageRequest"];
+      };
+    };
+  };
+  /** Marks a specific Chat conversation as read on behalf of the authenticated user. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient. */
+  markChatConversationRead: {
+    parameters: {
+      path: {
+        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        id: components["schemas"]["ChatConversationOrRecipientId"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatMarkConversationReadResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChatMarkConversationReadRequest"];
+      };
+    };
+  };
+  /** Sends a typing indicator to a specific Chat conversation on behalf of the authenticated user. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient. */
+  sendChatTypingIndicator: {
+    parameters: {
+      path: {
+        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        id: components["schemas"]["ChatConversationOrRecipientId"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatSendTypingIndicatorResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Initializes an XChat media upload session. */
+  chatMediaUploadInitialize: {
+    parameters: {};
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatMediaUploadInitializeResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChatMediaUploadInitializeRequest"];
+      };
+    };
+  };
+  /** Appends media data to an XChat upload session. */
+  chatMediaUploadAppend: {
+    parameters: {
+      path: {
+        /** The session/resume id from initialize. */
+        id: string;
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["MediaUploadAppendResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChatMediaUploadAppendRequest"];
+        "multipart/form-data": components["schemas"]["ChatMediaUploadAppendRequest"];
+      };
+    };
+  };
+  /** Finalizes an XChat media upload session. */
+  chatMediaUploadFinalize: {
+    parameters: {
+      path: {
+        /** The session/resume id from initialize. */
+        id: string;
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatMediaUploadFinalizeResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChatMediaUploadFinalizeRequest"];
+      };
+    };
+  };
+  /** Downloads encrypted media bytes from an XChat conversation. The response body contains raw binary bytes. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient. */
+  chatMediaDownload: {
+    parameters: {
+      path: {
+        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        id: components["schemas"]["ChatConversationOrRecipientId"];
+        /** The media hash key returned from the upload initialize step. */
+        media_hash_key: components["schemas"]["MediaHashKey"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/octet-stream": components["schemas"]["BinaryPayload"];
         };
       };
       /** The request has failed. */
@@ -4846,6 +6101,77 @@ export interface operations {
       };
     };
   };
+  /** Returns active and historical streaming connections with disconnect reasons for the authenticated application. */
+  getConnectionHistory: {
+    parameters: {
+      query: {
+        /** Filter by connection status. Use 'active' for current connections, 'inactive' for historical/disconnected connections, or 'all' for both. */
+        status?: "active" | "inactive" | "all";
+        /** Filter by streaming endpoint. Specify one or more endpoint names to filter results. */
+        endpoints?: (
+          | "filtered_stream"
+          | "sample_stream"
+          | "sample10_stream"
+          | "firehose_stream"
+          | "tweets_compliance_stream"
+          | "users_compliance_stream"
+          | "tweet_label_stream"
+          | "firehose_stream_lang_en"
+          | "firehose_stream_lang_ja"
+          | "firehose_stream_lang_ko"
+          | "firehose_stream_lang_pt"
+          | "likes_firehose_stream"
+          | "likes_sample10_stream"
+          | "likes_compliance_stream"
+        )[];
+        /** The maximum number of results to return per page. */
+        max_results?: number;
+        /** Token for paginating through results. Use the value from 'next_token' in the previous response. */
+        pagination_token?: string;
+        /** A comma separated list of Connection fields to display. */
+        "connection.fields"?: components["parameters"]["ConnectionFieldsParameter"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Get2ConnectionsResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Terminates multiple streaming connections by their UUIDs for the authenticated application. */
+  deleteConnectionsByUuids: {
+    parameters: {};
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["KillConnectionsByUuidsResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["KillConnectionsByUuidsRequest"];
+      };
+    };
+  };
   /** Terminates all active streaming connections for the authenticated application. */
   deleteAllConnections: {
     parameters: {};
@@ -4854,6 +6180,44 @@ export interface operations {
       200: {
         content: {
           "application/json": components["schemas"]["KillAllConnectionsResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Terminates all streaming connections for a specific endpoint ID for the authenticated application. */
+  deleteConnectionsByEndpoint: {
+    parameters: {
+      path: {
+        /** The endpoint ID to terminate connections for. */
+        endpoint_id:
+          | "filtered_stream"
+          | "sample_stream"
+          | "sample10_stream"
+          | "firehose_stream"
+          | "tweets_compliance_stream"
+          | "users_compliance_stream"
+          | "tweet_label_stream"
+          | "firehose_stream_lang_en"
+          | "firehose_stream_lang_ja"
+          | "firehose_stream_lang_ko"
+          | "firehose_stream_lang_pt"
+          | "likes_firehose_stream"
+          | "likes_sample10_stream"
+          | "likes_compliance_stream";
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["KillConnectionsByEndpointResponse"];
         };
       };
       /** The request has failed. */
@@ -4886,6 +6250,34 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["CreateDmConversationRequest"];
+      };
+    };
+  };
+  /** Downloads media attached to a legacy Direct Message. The requesting user must be a participant in the conversation containing the specified DM event. The response body contains raw binary bytes. */
+  dmConversationsMediaDownload: {
+    parameters: {
+      path: {
+        /** The unique identifier of the Direct Message event containing the media. */
+        dm_id: components["schemas"]["DmEventId"];
+        /** The unique identifier of the media attached to the Direct Message. */
+        media_id: components["schemas"]["MediaId"];
+        /** The resource identifier of the media file, including file extension (e.g. 'hVJQTwig.jpg'). */
+        resource_id: components["schemas"]["DmResourceId"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/octet-stream": components["schemas"]["BinaryPayload"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
       };
     };
   };
@@ -5327,6 +6719,8 @@ export interface operations {
         "like_with_tweet_author.fields"?: components["parameters"]["LikeWithTweetAuthorFieldsParameter"];
         /** A comma separated list of fields to expand. */
         expansions?: components["parameters"]["LikeWithTweetAuthorExpansionsParameter"];
+        /** A comma separated list of Media fields to display. */
+        "media.fields"?: components["parameters"]["MediaFieldsParameter"];
         /** A comma separated list of User fields to display. */
         "user.fields"?: components["parameters"]["UserFieldsParameter"];
         /** A comma separated list of Tweet fields to display. */
@@ -5365,6 +6759,8 @@ export interface operations {
         "like_with_tweet_author.fields"?: components["parameters"]["LikeWithTweetAuthorFieldsParameter"];
         /** A comma separated list of fields to expand. */
         expansions?: components["parameters"]["LikeWithTweetAuthorExpansionsParameter"];
+        /** A comma separated list of Media fields to display. */
+        "media.fields"?: components["parameters"]["MediaFieldsParameter"];
         /** A comma separated list of User fields to display. */
         "user.fields"?: components["parameters"]["UserFieldsParameter"];
         /** A comma separated list of Tweet fields to display. */
@@ -5952,6 +7348,64 @@ export interface operations {
       };
     };
   };
+  /** Retrieves a list of News stories matching the specified search query. */
+  searchNews: {
+    parameters: {
+      query: {
+        /** The search query. */
+        query: string;
+        /** The number of results to return. */
+        max_results?: number;
+        /** The maximum age of the News story to search for. */
+        max_age_hours?: number;
+        /** A comma separated list of News fields to display. */
+        "news.fields"?: components["parameters"]["NewsFieldsParameter"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Get2NewsSearchResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Retrieves news story by its ID. */
+  getNews: {
+    parameters: {
+      path: {
+        /** The ID of the news story. */
+        id: components["schemas"]["NewsId"];
+      };
+      query: {
+        /** A comma separated list of News fields to display. */
+        "news.fields"?: components["parameters"]["NewsFieldsParameter"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Get2NewsIdResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
   /** Creates a community note endpoint for LLM use case. */
   createCommunityNotes: {
     parameters: {};
@@ -6016,6 +7470,8 @@ export interface operations {
         pagination_token?: string;
         /** Max results to return. */
         max_results?: number;
+        /** The selection of posts to return. Valid values are 'feed_size: [small|large|xl|xxl], feed_lang: [en|es|...|all]'. Default (if not specified) is 'feed_size: small, feed_lang: en'. Only top AI writers have access to large, xl, and xxl size feeds. */
+        post_selection?: string;
         /** A comma separated list of Tweet fields to display. */
         "tweet.fields"?: components["parameters"]["TweetFieldsParameter"];
         /** A comma separated list of fields to expand. */
@@ -6358,7 +7814,7 @@ export interface operations {
       };
     };
   };
-  /** Creates a new Post for the authenticated user, or edits an existing Post when edit_options are provided. */
+  /** Creates a new Post for the authenticated user, or edits an existing Post when edit_options are provided. Supports paid partnership disclosure via the paid_partnership field. */
   createPosts: {
     parameters: {};
     responses: {
@@ -6450,7 +7906,7 @@ export interface operations {
       query: {
         /** One query/rule/filter for matching Posts. Refer to https://t.co/rulelength to identify the max query length. */
         query: string;
-        /** YYYY-MM-DDTHH:mm:ssZ. The oldest UTC timestamp (from most recent 7 days) from which the Posts will be provided. Timestamp is in second granularity and is inclusive (i.e. 12:00:01 includes the first second of the minute). */
+        /** YYYY-MM-DDTHH:mm:ssZ. The oldest UTC timestamp from which the Posts will be provided. Timestamp is in second granularity and is inclusive (i.e. 12:00:01 includes the first second of the minute). */
         start_time?: string;
         /** YYYY-MM-DDTHH:mm:ssZ. The newest, most recent UTC timestamp to which the Posts will be provided. Timestamp is in second granularity and is exclusive (i.e. 12:00:01 excludes the first second of the minute). */
         end_time?: string;
@@ -7597,6 +9053,32 @@ export interface operations {
       };
     };
   };
+  /** Returns the public keys and Juicebox configuration for the specified users. */
+  getUsersPublicKeys: {
+    parameters: {
+      query: {
+        /** A list of User IDs, comma-separated. You can specify up to 100 IDs. */
+        ids: components["schemas"]["UserId"][];
+        /** A comma separated list of PublicKey fields to display. */
+        "public_key.fields"?: components["parameters"]["PublicKeyFieldsParameter"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Get2UsersPublicKeysResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
   /** Retrieves a list of Posts that repost content from the authenticated user. */
   getUsersRepostsOfMe: {
     parameters: {
@@ -7690,6 +9172,42 @@ export interface operations {
       200: {
         content: {
           "application/json": components["schemas"]["Get2UsersIdResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Retrieves a list of Users who are affiliated with a specific organization User by their ID. */
+  getUsersAffiliates: {
+    parameters: {
+      path: {
+        /** The ID of the User to lookup. */
+        id: components["schemas"]["UserId"];
+      };
+      query: {
+        /** The maximum number of results. */
+        max_results?: number;
+        /** This parameter is used to get a specified 'page' of results. */
+        pagination_token?: components["schemas"]["PaginationTokenLong"];
+        /** A comma separated list of User fields to display. */
+        "user.fields"?: components["parameters"]["UserFieldsParameter"];
+        /** A comma separated list of fields to expand. */
+        expansions?: components["parameters"]["UserExpansionsParameter"];
+        /** A comma separated list of Tweet fields to display. */
+        "tweet.fields"?: components["parameters"]["TweetFieldsParameter"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Get2UsersIdAffiliatesResponse"];
         };
       };
       /** The request has failed. */
@@ -8501,6 +10019,63 @@ export interface operations {
       };
     };
   };
+  /** Returns the public keys and Juicebox configuration for the specified user. */
+  getUsersPublicKey: {
+    parameters: {
+      path: {
+        /** The ID of the User to lookup. */
+        id: components["schemas"]["UserId"];
+      };
+      query: {
+        /** A comma separated list of PublicKey fields to display. */
+        "public_key.fields"?: components["parameters"]["PublicKeyFieldsParameter"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["Get2UsersIdPublicKeysResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Registers a user's public key for X Chat encryption. */
+  addUserPublicKey: {
+    parameters: {
+      path: {
+        /** The ID of the requesting user. */
+        id: components["schemas"]["UserId"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatAddPublicKeyResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChatAddPublicKeyRequest"];
+      };
+    };
+  };
   /** Causes the authenticated user to repost a specific Post by its ID. */
   repostPost: {
     parameters: {
@@ -8760,6 +10335,30 @@ export interface operations {
       };
     };
   };
+  /** Creates a replay job to retrieve events from up to the past 24 hours for all events delivered or attempted to be delivered to the webhook. */
+  createWebhookReplayJob: {
+    parameters: {};
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ReplayJobCreateResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["WebhookReplayCreateRequest"];
+      };
+    };
+  };
   /** Triggers a CRC check for a given webhook. */
   validateWebhooks: {
     parameters: {
@@ -8811,24 +10410,40 @@ export interface operations {
 }
 
 export interface external {}
-export type createAccountActivityReplayJob = operations['createAccountActivityReplayJob']
 export type getAccountActivitySubscriptionCount = operations['getAccountActivitySubscriptionCount']
 export type validateAccountActivitySubscription = operations['validateAccountActivitySubscription']
 export type createAccountActivitySubscription = operations['createAccountActivitySubscription']
 export type getAccountActivitySubscriptions = operations['getAccountActivitySubscriptions']
 export type deleteAccountActivitySubscription = operations['deleteAccountActivitySubscription']
 export type activityStream = operations['activityStream']
+export type deleteActivitySubscriptionsByIds = operations['deleteActivitySubscriptionsByIds']
 export type getActivitySubscriptions = operations['getActivitySubscriptions']
 export type createActivitySubscription = operations['createActivitySubscription']
 export type deleteActivitySubscription = operations['deleteActivitySubscription']
 export type updateActivitySubscription = operations['updateActivitySubscription']
+export type getChatConversations = operations['getChatConversations']
+export type createChatConversation = operations['createChatConversation']
+export type initializeChatGroup = operations['initializeChatGroup']
+export type initializeChatConversationKeys = operations['initializeChatConversationKeys']
+export type addChatGroupMembers = operations['addChatGroupMembers']
+export type sendChatMessage = operations['sendChatMessage']
+export type markChatConversationRead = operations['markChatConversationRead']
+export type sendChatTypingIndicator = operations['sendChatTypingIndicator']
+export type chatMediaUploadInitialize = operations['chatMediaUploadInitialize']
+export type chatMediaUploadAppend = operations['chatMediaUploadAppend']
+export type chatMediaUploadFinalize = operations['chatMediaUploadFinalize']
+export type chatMediaDownload = operations['chatMediaDownload']
 export type searchCommunities = operations['searchCommunities']
 export type getCommunitiesById = operations['getCommunitiesById']
 export type getComplianceJobs = operations['getComplianceJobs']
 export type createComplianceJobs = operations['createComplianceJobs']
 export type getComplianceJobsById = operations['getComplianceJobsById']
+export type deleteConnectionsByUuids = operations['deleteConnectionsByUuids']
+export type getConnectionHistory = operations['getConnectionHistory']
 export type deleteAllConnections = operations['deleteAllConnections']
+export type deleteConnectionsByEndpoint = operations['deleteConnectionsByEndpoint']
 export type createDirectMessagesConversation = operations['createDirectMessagesConversation']
+export type dmConversationsMediaDownload = operations['dmConversationsMediaDownload']
 export type getDirectMessagesEventsByParticipantId = operations['getDirectMessagesEventsByParticipantId']
 export type createDirectMessagesByParticipantId = operations['createDirectMessagesByParticipantId']
 export type createDirectMessagesByConversationId = operations['createDirectMessagesByConversationId']
@@ -8862,6 +10477,8 @@ export type initializeMediaUpload = operations['initializeMediaUpload']
 export type appendMediaUpload = operations['appendMediaUpload']
 export type finalizeMediaUpload = operations['finalizeMediaUpload']
 export type getMediaByMediaKey = operations['getMediaByMediaKey']
+export type searchNews = operations['searchNews']
+export type getNews = operations['getNews']
 export type createCommunityNotes = operations['createCommunityNotes']
 export type searchCommunityNotesWritten = operations['searchCommunityNotesWritten']
 export type searchEligiblePosts = operations['searchEligiblePosts']
@@ -8911,9 +10528,11 @@ export type getUsersByUsername = operations['getUsersByUsername']
 export type streamUsersCompliance = operations['streamUsersCompliance']
 export type getUsersMe = operations['getUsersMe']
 export type getTrendsPersonalizedTrends = operations['getTrendsPersonalizedTrends']
+export type getUsersPublicKeys = operations['getUsersPublicKeys']
 export type getUsersRepostsOfMe = operations['getUsersRepostsOfMe']
 export type searchUsers = operations['searchUsers']
 export type getUsersById = operations['getUsersById']
+export type getUsersAffiliates = operations['getUsersAffiliates']
 export type getUsersBlocking = operations['getUsersBlocking']
 export type getUsersBookmarks = operations['getUsersBookmarks']
 export type createUsersBookmark = operations['createUsersBookmark']
@@ -8939,6 +10558,8 @@ export type getUsersOwnedLists = operations['getUsersOwnedLists']
 export type getUsersPinnedLists = operations['getUsersPinnedLists']
 export type pinList = operations['pinList']
 export type unpinList = operations['unpinList']
+export type getUsersPublicKey = operations['getUsersPublicKey']
+export type addUserPublicKey = operations['addUserPublicKey']
 export type repostPost = operations['repostPost']
 export type unrepostPost = operations['unrepostPost']
 export type getUsersTimeline = operations['getUsersTimeline']
@@ -8947,5 +10568,6 @@ export type unfollowUser = operations['unfollowUser']
 export type unmuteUser = operations['unmuteUser']
 export type getWebhooks = operations['getWebhooks']
 export type createWebhooks = operations['createWebhooks']
+export type createWebhookReplayJob = operations['createWebhookReplayJob']
 export type deleteWebhooks = operations['deleteWebhooks']
 export type validateWebhooks = operations['validateWebhooks']

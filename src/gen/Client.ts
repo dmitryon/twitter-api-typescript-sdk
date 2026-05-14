@@ -17,24 +17,40 @@ import {
 import { OAuth2Bearer } from "../auth";
 
 import {
-  createAccountActivityReplayJob,
   getAccountActivitySubscriptionCount,
   validateAccountActivitySubscription,
   createAccountActivitySubscription,
   getAccountActivitySubscriptions,
   deleteAccountActivitySubscription,
   activityStream,
+  deleteActivitySubscriptionsByIds,
   getActivitySubscriptions,
   createActivitySubscription,
   deleteActivitySubscription,
   updateActivitySubscription,
+  getChatConversations,
+  createChatConversation,
+  initializeChatGroup,
+  initializeChatConversationKeys,
+  addChatGroupMembers,
+  sendChatMessage,
+  markChatConversationRead,
+  sendChatTypingIndicator,
+  chatMediaUploadInitialize,
+  chatMediaUploadAppend,
+  chatMediaUploadFinalize,
+  chatMediaDownload,
   searchCommunities,
   getCommunitiesById,
   getComplianceJobs,
   createComplianceJobs,
   getComplianceJobsById,
+  deleteConnectionsByUuids,
+  getConnectionHistory,
   deleteAllConnections,
+  deleteConnectionsByEndpoint,
   createDirectMessagesConversation,
+  dmConversationsMediaDownload,
   getDirectMessagesEventsByParticipantId,
   createDirectMessagesByParticipantId,
   createDirectMessagesByConversationId,
@@ -68,6 +84,8 @@ import {
   appendMediaUpload,
   finalizeMediaUpload,
   getMediaByMediaKey,
+  searchNews,
+  getNews,
   createCommunityNotes,
   searchCommunityNotesWritten,
   searchEligiblePosts,
@@ -117,9 +135,11 @@ import {
   streamUsersCompliance,
   getUsersMe,
   getTrendsPersonalizedTrends,
+  getUsersPublicKeys,
   getUsersRepostsOfMe,
   searchUsers,
   getUsersById,
+  getUsersAffiliates,
   getUsersBlocking,
   getUsersBookmarks,
   createUsersBookmark,
@@ -145,6 +165,8 @@ import {
   getUsersPinnedLists,
   pinList,
   unpinList,
+  getUsersPublicKey,
+  addUserPublicKey,
   repostPost,
   unrepostPost,
   getUsersTimeline,
@@ -153,6 +175,7 @@ import {
   unmuteUser,
   getWebhooks,
   createWebhooks,
+  createWebhookReplayJob,
   deleteWebhooks,
   validateWebhooks,
 } from "./openapi-types";
@@ -172,8 +195,8 @@ export class Client {
     auth: string | AuthClient,
     requestOptions?: Partial<RequestOptions>
   ) {
-    this.version = "2.0.0";
-    this.twitterApiOpenApiVersion = "2.152";
+    this.version = "2.163";
+    this.twitterApiOpenApiVersion = "2.163";
     this.#auth = typeof auth === "string" ? new OAuth2Bearer(auth) : auth;
     this.#defaultRequestOptions = {
       ...requestOptions,
@@ -268,6 +291,48 @@ export class Client {
    */
   public readonly connections = {
     /**
+    * Terminate multiple connections
+    *
+
+    * Terminates multiple streaming connections by their UUIDs for the authenticated application.
+    * @param request_body - The request_body for deleteConnectionsByUuids
+    * @param request_options - Customize the options for this request
+    */
+    deleteConnectionsByUuids: (
+      request_body: TwitterBody<deleteConnectionsByUuids>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<deleteConnectionsByUuids>> =>
+      rest<TwitterResponse<deleteConnectionsByUuids>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/connections`,
+        request_body,
+        method: "DELETE",
+      }),
+
+    /**
+    * Get Connection History
+    *
+
+    * Returns active and historical streaming connections with disconnect reasons for the authenticated application.
+    * @param params - The params for getConnectionHistory
+    * @param request_options - Customize the options for this request
+    */
+    getConnectionHistory: (
+      params: TwitterParams<getConnectionHistory> = {},
+      request_options?: Partial<RequestOptions>
+    ): TwitterPaginatedResponse<TwitterResponse<getConnectionHistory>> =>
+      paginate<TwitterResponse<getConnectionHistory>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/connections`,
+        params,
+        method: "GET",
+      }),
+
+    /**
     * Terminate all connections
     *
 
@@ -282,6 +347,26 @@ export class Client {
         ...this.#defaultRequestOptions,
         ...request_options,
         endpoint: `/2/connections/all`,
+        method: "DELETE",
+      }),
+
+    /**
+    * Terminate connections by endpoint
+    *
+
+    * Terminates all streaming connections for a specific endpoint ID for the authenticated application.
+    * @param endpoint_id - The endpoint ID to terminate connections for.
+    * @param request_options - Customize the options for this request
+    */
+    deleteConnectionsByEndpoint: (
+      endpoint_id: string,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<deleteConnectionsByEndpoint>> =>
+      rest<TwitterResponse<deleteConnectionsByEndpoint>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/connections/${endpoint_id}`,
         method: "DELETE",
       }),
   };
@@ -668,19 +753,15 @@ export class Client {
     mediaUpload: (
       request_body: TwitterBody<mediaUpload>,
       request_options?: Partial<RequestOptions>
-    ): Promise<TwitterResponse<mediaUpload>> => {
-      // Detect if this is a multipart/form-data request by checking for media field
-      const isMultipart = request_body && 'media' in request_body;
-      return rest<TwitterResponse<mediaUpload>>({
+    ): Promise<TwitterResponse<mediaUpload>> =>
+      rest<TwitterResponse<mediaUpload>>({
         auth: this.#auth,
         ...this.#defaultRequestOptions,
         ...request_options,
         endpoint: `/2/media/upload`,
         request_body,
         method: "POST",
-        ...(isMultipart && { content_type: "multipart/form-data" }),
-      });
-    },
+      }),
 
     /**
     * Initialize media upload
@@ -765,6 +846,59 @@ export class Client {
         ...this.#defaultRequestOptions,
         ...request_options,
         endpoint: `/2/media/${media_key}`,
+        params,
+        method: "GET",
+      }),
+  };
+  /**
+   * News
+   *
+   * Endpoint for retrieving news stories
+   *
+   * Find out more
+   * https://developer.twitter.com/en/docs/twitter-api/news
+   */
+  public readonly news = {
+    /**
+    * Search News
+    *
+
+    * Retrieves a list of News stories matching the specified search query.
+    * @param params - The params for searchNews
+    * @param request_options - Customize the options for this request
+    */
+    searchNews: (
+      params: TwitterParams<searchNews>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<searchNews>> =>
+      rest<TwitterResponse<searchNews>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/news/search`,
+        params,
+        method: "GET",
+      }),
+
+    /**
+    * Get news stories by ID
+    *
+
+    * Retrieves news story by its ID.
+    * @param id - The ID of the news story.
+    * @param params - The params for getNews
+    * @param request_options - Customize the options for this request
+    */
+    getNews: (
+      id: string,
+      params: TwitterParams<getNews> = {},
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<getNews>> =>
+      rest<TwitterResponse<getNews>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/news/${id}`,
         params,
         method: "GET",
       }),
@@ -1355,7 +1489,7 @@ export class Client {
     * Create or Edit Post
     *
 
-    * Creates a new Post for the authenticated user, or edits an existing Post when edit_options are provided.
+    * Creates a new Post for the authenticated user, or edits an existing Post when edit_options are provided. Supports paid partnership disclosure via the paid_partnership field.
     * @param request_body - The request_body for createPosts
     * @param request_options - Customize the options for this request
     */
@@ -1731,6 +1865,27 @@ export class Client {
       }),
 
     /**
+    * Get public keys for multiple users
+    *
+
+    * Returns the public keys and Juicebox configuration for the specified users.
+    * @param params - The params for getUsersPublicKeys
+    * @param request_options - Customize the options for this request
+    */
+    getUsersPublicKeys: (
+      params: TwitterParams<getUsersPublicKeys>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<getUsersPublicKeys>> =>
+      rest<TwitterResponse<getUsersPublicKeys>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/users/public_keys`,
+        params,
+        method: "GET",
+      }),
+
+    /**
     * Get Reposts of me
     *
 
@@ -1791,6 +1946,29 @@ export class Client {
         ...this.#defaultRequestOptions,
         ...request_options,
         endpoint: `/2/users/${id}`,
+        params,
+        method: "GET",
+      }),
+
+    /**
+    * Get affiliates
+    *
+
+    * Retrieves a list of Users who are affiliated with a specific organization User by their ID.
+    * @param id - The ID of the User to lookup.
+    * @param params - The params for getUsersAffiliates
+    * @param request_options - Customize the options for this request
+    */
+    getUsersAffiliates: (
+      id: string,
+      params: TwitterParams<getUsersAffiliates> = {},
+      request_options?: Partial<RequestOptions>
+    ): TwitterPaginatedResponse<TwitterResponse<getUsersAffiliates>> =>
+      paginate<TwitterResponse<getUsersAffiliates>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/users/${id}/affiliates`,
         params,
         method: "GET",
       }),
@@ -2360,6 +2538,29 @@ export class Client {
       }),
 
     /**
+    * Get user public keys
+    *
+
+    * Returns the public keys and Juicebox configuration for the specified user.
+    * @param id - The ID of the User to lookup.
+    * @param params - The params for getUsersPublicKey
+    * @param request_options - Customize the options for this request
+    */
+    getUsersPublicKey: (
+      id: string,
+      params: TwitterParams<getUsersPublicKey> = {},
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<getUsersPublicKey>> =>
+      rest<TwitterResponse<getUsersPublicKey>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/users/${id}/public_keys`,
+        params,
+        method: "GET",
+      }),
+
+    /**
     * Repost Post
     *
 
@@ -2504,29 +2705,6 @@ export class Client {
    */
   public readonly accountactivity = {
     /**
-    * Create replay job
-    *
-
-    * Creates a replay job to retrieve activities from up to the past 5 days for all subscriptions associated with a given webhook.
-    * @param webhook_id - The unique identifier for the webhook configuration.
-    * @param params - The params for createAccountActivityReplayJob
-    * @param request_options - Customize the options for this request
-    */
-    createAccountActivityReplayJob: (
-      webhook_id: string,
-      params: TwitterParams<createAccountActivityReplayJob>,
-      request_options?: Partial<RequestOptions>
-    ): Promise<TwitterResponse<createAccountActivityReplayJob>> =>
-      rest<TwitterResponse<createAccountActivityReplayJob>>({
-        auth: this.#auth,
-        ...this.#defaultRequestOptions,
-        ...request_options,
-        endpoint: `/2/account_activity/replay/webhooks/${webhook_id}/subscriptions/all`,
-        params,
-        method: "POST",
-      }),
-
-    /**
     * Get subscription count
     *
 
@@ -2660,20 +2838,44 @@ export class Client {
       }),
 
     /**
-    * Get X activity subscriptions
+    * Delete X activity subscriptions by IDs
     *
 
-    * Get a list of active subscriptions for XAA
+    * Deletes multiple subscriptions for X activity events by their IDs
+    * @param params - The params for deleteActivitySubscriptionsByIds
     * @param request_options - Customize the options for this request
     */
-    getActivitySubscriptions: (
+    deleteActivitySubscriptionsByIds: (
+      params: TwitterParams<deleteActivitySubscriptionsByIds>,
       request_options?: Partial<RequestOptions>
-    ): Promise<TwitterResponse<getActivitySubscriptions>> =>
-      rest<TwitterResponse<getActivitySubscriptions>>({
+    ): Promise<TwitterResponse<deleteActivitySubscriptionsByIds>> =>
+      rest<TwitterResponse<deleteActivitySubscriptionsByIds>>({
         auth: this.#auth,
         ...this.#defaultRequestOptions,
         ...request_options,
         endpoint: `/2/activity/subscriptions`,
+        params,
+        method: "DELETE",
+      }),
+
+    /**
+    * Get X activity subscriptions
+    *
+
+    * Get a list of active subscriptions for XAA
+    * @param params - The params for getActivitySubscriptions
+    * @param request_options - Customize the options for this request
+    */
+    getActivitySubscriptions: (
+      params: TwitterParams<getActivitySubscriptions> = {},
+      request_options?: Partial<RequestOptions>
+    ): TwitterPaginatedResponse<TwitterResponse<getActivitySubscriptions>> =>
+      paginate<TwitterResponse<getActivitySubscriptions>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/activity/subscriptions`,
+        params,
         method: "GET",
       }),
 
@@ -2739,6 +2941,331 @@ export class Client {
         endpoint: `/2/activity/subscriptions/${subscription_id}`,
         request_body,
         method: "PUT",
+      }),
+  };
+  /**
+   * chat
+   *
+   * chat API
+   *
+   * Find out more
+   * https://developer.x.com
+   */
+  public readonly chat = {
+    /**
+    * Get Chat Conversations
+    *
+
+    * Retrieves a list of Chat conversations for the authenticated user's inbox.
+    * @param params - The params for getChatConversations
+    * @param request_options - Customize the options for this request
+    */
+    getChatConversations: (
+      params: TwitterParams<getChatConversations> = {},
+      request_options?: Partial<RequestOptions>
+    ): TwitterPaginatedResponse<TwitterResponse<getChatConversations>> =>
+      paginate<TwitterResponse<getChatConversations>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/conversations`,
+        params,
+        method: "GET",
+      }),
+
+    /**
+    * Create Chat Group Conversation
+    *
+
+    * Creates a new encrypted Chat group conversation on behalf of the authenticated user.
+    * @param request_body - The request_body for createChatConversation
+    * @param request_options - Customize the options for this request
+    */
+    createChatConversation: (
+      request_body: TwitterBody<createChatConversation>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<createChatConversation>> =>
+      rest<TwitterResponse<createChatConversation>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/conversations/group`,
+        request_body,
+        method: "POST",
+      }),
+
+    /**
+    * Initialize Chat Group
+    *
+
+    * Initializes a new XChat group conversation and returns a unique conversation ID.
+
+This endpoint is the first step in creating a group chat. The returned conversation_id 
+should be used in subsequent calls to POST /chat/conversations/group to fully create and 
+configure the group with members, admins, encryption keys, and other settings.
+
+**Workflow:**
+1. Call this endpoint to get a `conversation_id`
+2. Use that `conversation_id` when calling `POST /chat/conversations/group` to create the group
+
+**Authentication:**
+- Requires OAuth 1.0a User Context or OAuth 2.0 User Context
+- Required scope: `dm.write`
+
+    * @param request_options - Customize the options for this request
+    */
+    initializeChatGroup: (
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<initializeChatGroup>> =>
+      rest<TwitterResponse<initializeChatGroup>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/conversations/group/initialize`,
+        method: "POST",
+      }),
+
+    /**
+    * Initialize Conversation Keys
+    *
+
+    * Initializes encryption keys for a Chat conversation. This is the first step
+before sending messages in a new 1:1 conversation.
+
+For 1:1 conversations, provide the recipient's user ID as the conversation_id.
+The server constructs the canonical conversation ID from the authenticated user
+and recipient.
+
+The request body must contain the conversation key version and participant keys
+(the conversation key encrypted for each participant using their public key).
+
+**Workflow (1:1 conversation):**
+1. Generate a conversation key using the SDK
+2. Encrypt the key for both participants using their public keys
+3. Call this endpoint to register the keys
+4. Send messages using `POST /chat/conversations/{id}/messages`
+
+**Authentication:**
+- Requires OAuth 1.0a User Context or OAuth 2.0 User Context
+- Required scopes: `tweet.read`, `users.read`, `dm.write`
+
+    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param request_body - The request_body for initializeChatConversationKeys
+    * @param request_options - Customize the options for this request
+    */
+    initializeChatConversationKeys: (
+      id: string,
+      request_body: TwitterBody<initializeChatConversationKeys>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<initializeChatConversationKeys>> =>
+      rest<TwitterResponse<initializeChatConversationKeys>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/conversations/${id}/keys`,
+        request_body,
+        method: "POST",
+      }),
+
+    /**
+    * Add members to a Chat group conversation
+    *
+
+    * Adds one or more members to an existing encrypted Chat group conversation, rotating the conversation key.
+    * @param id - The Chat group conversation ID.
+    * @param request_body - The request_body for addChatGroupMembers
+    * @param request_options - Customize the options for this request
+    */
+    addChatGroupMembers: (
+      id: string,
+      request_body: TwitterBody<addChatGroupMembers>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<addChatGroupMembers>> =>
+      rest<TwitterResponse<addChatGroupMembers>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/conversations/${id}/members`,
+        request_body,
+        method: "POST",
+      }),
+
+    /**
+    * Send Chat Message
+    *
+
+    * Sends an encrypted message to a specific Chat conversation. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient.
+    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param request_body - The request_body for sendChatMessage
+    * @param request_options - Customize the options for this request
+    */
+    sendChatMessage: (
+      id: string,
+      request_body: TwitterBody<sendChatMessage>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<sendChatMessage>> =>
+      rest<TwitterResponse<sendChatMessage>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/conversations/${id}/messages`,
+        request_body,
+        method: "POST",
+      }),
+
+    /**
+    * Mark Conversation as Read
+    *
+
+    * Marks a specific Chat conversation as read on behalf of the authenticated user. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient.
+    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param request_body - The request_body for markChatConversationRead
+    * @param request_options - Customize the options for this request
+    */
+    markChatConversationRead: (
+      id: string,
+      request_body: TwitterBody<markChatConversationRead>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<markChatConversationRead>> =>
+      rest<TwitterResponse<markChatConversationRead>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/conversations/${id}/read`,
+        request_body,
+        method: "POST",
+      }),
+
+    /**
+    * Send Typing Indicator
+    *
+
+    * Sends a typing indicator to a specific Chat conversation on behalf of the authenticated user. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient.
+    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param request_options - Customize the options for this request
+    */
+    sendChatTypingIndicator: (
+      id: string,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<sendChatTypingIndicator>> =>
+      rest<TwitterResponse<sendChatTypingIndicator>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/conversations/${id}/typing`,
+        method: "POST",
+      }),
+
+    /**
+    * Initialize Chat Media Upload
+    *
+
+    * Initializes an XChat media upload session.
+    * @param request_body - The request_body for chatMediaUploadInitialize
+    * @param request_options - Customize the options for this request
+    */
+    chatMediaUploadInitialize: (
+      request_body: TwitterBody<chatMediaUploadInitialize>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<chatMediaUploadInitialize>> =>
+      rest<TwitterResponse<chatMediaUploadInitialize>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/media/upload/initialize`,
+        request_body,
+        method: "POST",
+      }),
+
+    /**
+    * Append Chat Media Upload
+    *
+
+    * Appends media data to an XChat upload session.
+    * @param id - The session/resume id from initialize.
+    * @param request_body - The request_body for chatMediaUploadAppend
+    * @param request_options - Customize the options for this request
+    */
+    chatMediaUploadAppend: (
+      id: string,
+      request_body: TwitterBody<chatMediaUploadAppend>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<chatMediaUploadAppend>> =>
+      rest<TwitterResponse<chatMediaUploadAppend>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/media/upload/${id}/append`,
+        request_body,
+        method: "POST",
+      }),
+
+    /**
+    * Finalize Chat Media Upload
+    *
+
+    * Finalizes an XChat media upload session.
+    * @param id - The session/resume id from initialize.
+    * @param request_body - The request_body for chatMediaUploadFinalize
+    * @param request_options - Customize the options for this request
+    */
+    chatMediaUploadFinalize: (
+      id: string,
+      request_body: TwitterBody<chatMediaUploadFinalize>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<chatMediaUploadFinalize>> =>
+      rest<TwitterResponse<chatMediaUploadFinalize>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/media/upload/${id}/finalize`,
+        request_body,
+        method: "POST",
+      }),
+
+    /**
+    * Download Chat Media
+    *
+
+    * Downloads encrypted media bytes from an XChat conversation. The response body contains raw binary bytes. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient.
+    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param media_hash_key - The media hash key returned from the upload initialize step.
+    * @param request_options - Customize the options for this request
+    */
+    chatMediaDownload: (
+      id: string,
+      media_hash_key: string,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<chatMediaDownload>> =>
+      rest<TwitterResponse<chatMediaDownload>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/media/${id}/${media_hash_key}`,
+        method: "GET",
+      }),
+
+    /**
+    * Add public key
+    *
+
+    * Registers a user's public key for X Chat encryption.
+    * @param id - The ID of the requesting user.
+    * @param request_body - The request_body for addUserPublicKey
+    * @param request_options - Customize the options for this request
+    */
+    addUserPublicKey: (
+      id: string,
+      request_body: TwitterBody<addUserPublicKey>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<addUserPublicKey>> =>
+      rest<TwitterResponse<addUserPublicKey>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/users/${id}/public_keys`,
+        request_body,
+        method: "POST",
       }),
   };
   /**
@@ -2822,6 +3349,30 @@ export class Client {
         endpoint: `/2/dm_conversations`,
         request_body,
         method: "POST",
+      }),
+
+    /**
+    * Download DM Media
+    *
+
+    * Downloads media attached to a legacy Direct Message. The requesting user must be a participant in the conversation containing the specified DM event. The response body contains raw binary bytes.
+    * @param dm_id - The unique identifier of the Direct Message event containing the media.
+    * @param media_id - The unique identifier of the media attached to the Direct Message.
+    * @param resource_id - The resource identifier of the media file, including file extension (e.g. 'hVJQTwig.jpg').
+    * @param request_options - Customize the options for this request
+    */
+    dmConversationsMediaDownload: (
+      dm_id: string,
+      media_id: string,
+      resource_id: string,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<dmConversationsMediaDownload>> =>
+      rest<TwitterResponse<dmConversationsMediaDownload>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/dm_conversations/media/${dm_id}/${media_id}/${resource_id}`,
+        method: "GET",
       }),
 
     /**
@@ -2983,7 +3534,6 @@ export class Client {
         params,
         method: "GET",
       }),
-
   };
   /**
    * communitynotes
@@ -3259,6 +3809,27 @@ export class Client {
         ...this.#defaultRequestOptions,
         ...request_options,
         endpoint: `/2/webhooks`,
+        request_body,
+        method: "POST",
+      }),
+
+    /**
+    * Create replay job for webhook
+    *
+
+    * Creates a replay job to retrieve events from up to the past 24 hours for all events delivered or attempted to be delivered to the webhook.
+    * @param request_body - The request_body for createWebhookReplayJob
+    * @param request_options - Customize the options for this request
+    */
+    createWebhookReplayJob: (
+      request_body: TwitterBody<createWebhookReplayJob>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<createWebhookReplayJob>> =>
+      rest<TwitterResponse<createWebhookReplayJob>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/webhooks/replay`,
         request_body,
         method: "POST",
       }),
