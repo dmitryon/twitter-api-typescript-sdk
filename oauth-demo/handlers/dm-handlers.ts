@@ -1,32 +1,18 @@
 import { Request, Response } from "express";
-import { Client } from "twitter-api-sdk";
-import { IntegrationStorage, CredentialsStorage, AccessTokenStorage } from "../storage";
-import { oauthFromIntegration } from "../oauth-utils";
+import { resolveAuth, integrationStorage, accessTokenStorage } from "./handler-utils";
 import { log } from "../logger";
-import { apiLogger } from "../api-logger";
-
-const integrationStorage = new IntegrationStorage();
-const credentialsStorage = new CredentialsStorage();
-const accessTokenStorage = new AccessTokenStorage();
 
 export const getDMConversation = async (req: Request, res: Response) => {
   try {
     const { integrationId, userId, participantId } = req.params;
-    const { auth } = req.query;
+    const { auth: authType } = req.query;
     
-    const integration = await integrationStorage.load(integrationId);
-    if (!integration) {
-      res.status(404).json({ error: "Integration not found" });
+    const resolved = await resolveAuth(integrationId, authType as string);
+    if (!resolved) {
+      res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
     }
-    
-    const authClient = await oauthFromIntegration(auth as 'oauth1' | 'oauth2', integration, credentialsStorage, accessTokenStorage, integrationStorage);
-    if (!authClient) {
-      res.status(400).json({ error: "Invalid auth method or tokens not found" });
-      return;
-    }
-    
-    const client = new Client(authClient, { logger: apiLogger });
+    const { client } = resolved;
     const dmResponse = await client.directmessages.getDirectMessagesEventsByParticipantId(participantId, {
       "dm_event.fields": ["id", "text", "created_at", "sender_id", "attachments"],
       "media.fields": ["media_key", "type", "url", "preview_image_url", "variants", "duration_ms", "height", "width"],
@@ -45,22 +31,15 @@ export const getDMConversation = async (req: Request, res: Response) => {
 export const sendDM = async (req: Request, res: Response) => {
   try {
     const { integrationId, userId, participantId } = req.params;
-    const { auth } = req.query;
+    const { auth: authType } = req.query;
     const { text, media_id } = req.body;
     
-    const integration = await integrationStorage.load(integrationId);
-    if (!integration) {
-      res.status(404).json({ error: "Integration not found" });
+    const resolved = await resolveAuth(integrationId, authType as string);
+    if (!resolved) {
+      res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
     }
-    
-    const authClient = await oauthFromIntegration(auth as 'oauth1' | 'oauth2', integration, credentialsStorage, accessTokenStorage, integrationStorage);
-    if (!authClient) {
-      res.status(400).json({ error: "Invalid auth method or tokens not found" });
-      return;
-    }
-    
-    const client = new Client(authClient, { logger: apiLogger });
+    const { client } = resolved;
     const dmData: any = { text };
     
     if (media_id) {
@@ -83,10 +62,10 @@ export const getFollowers = async (req: Request, res: Response) => {
       res.status(404).json({ error: "Integration not found" });
       return;
     }
-    
+
     const authType = integration.oauth1?.accessTokenId ? 'oauth1' : 'oauth2';
-    const authClient = await oauthFromIntegration(authType, integration, credentialsStorage, accessTokenStorage, integrationStorage);
-    if (!authClient) {
+    const resolved = await resolveAuth(req.params.id, authType);
+    if (!resolved) {
       res.status(400).json({ error: "Invalid auth method or tokens not found" });
       return;
     }
@@ -94,19 +73,18 @@ export const getFollowers = async (req: Request, res: Response) => {
     const accessTokenId = authType === 'oauth1' ? integration.oauth1!.accessTokenId : integration.oauth2!.accessTokenId;
     const tokenEntry = await accessTokenStorage.load(accessTokenId);
     const userId = tokenEntry!.user.id;
-    
-    const client = new Client(authClient, { logger: apiLogger });
-    const followersResponse = await client.users.getUsersFollowers(userId, {
+
+    const followersResponse = await resolved.client.users.getUsersFollowers(userId, {
       "user.fields": ["id", "username", "name", "profile_image_url"]
     });
-    
+
     const followers = followersResponse.data?.map(user => ({
       id: user.id,
       username: user.username!,
       name: user.name!,
       pictureUrl: user.profile_image_url
     })) || [];
-    
+
     log.debug('dm', `Fetched ${followers.length} followers for integration ${req.params.id}`);
     res.json(followers);
   } catch (error: any) {

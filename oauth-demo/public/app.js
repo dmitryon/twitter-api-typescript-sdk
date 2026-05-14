@@ -480,11 +480,35 @@ class TwitterOAuthDemo {
     }
 
     async startChat(integrationId) {
+        const integration = this.integrations.find(i => i.id === integrationId);
+        const hasOAuth2 = !!integration.oauth2?.tokens;
+        
+        const modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.style.display = 'block';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <span class="close" onclick="this.parentElement.parentElement.remove()">&times;</span>
+                <h2>Choose Chat Mode</h2>
+                <div class="chat-mode-choice">
+                    <button class="btn btn-primary" onclick="this.closest('.modal').remove(); app.startLegacyDM('${integrationId}')">
+                        💬 Legacy DM
+                    </button>
+                    <button class="btn btn-xchat" ${!hasOAuth2 ? 'disabled title="Requires OAuth2"' : ''} onclick="this.closest('.modal').remove(); app.startXChat('${integrationId}')">
+                        🔐 X Chat
+                    </button>
+                </div>
+                ${!hasOAuth2 ? '<p class="hint">X Chat requires OAuth2 authentication</p>' : ''}
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+
+    async startLegacyDM(integrationId) {
+    async startLegacyDM(integrationId) {
         try {
             const response = await fetch(`/integrations/${integrationId}/dm/followers`);
             const followers = await response.json();
-            
-            console.log('Followers loaded:', followers);
             
             if (followers.length === 0) {
                 alert('No followers available for DM');
@@ -495,6 +519,21 @@ class TwitterOAuthDemo {
         } catch (error) {
             console.error('Failed to load followers:', error);
             alert('Failed to load followers');
+        }
+    }
+
+    async startXChat(integrationId) {
+        const integration = this.integrations.find(i => i.id === integrationId);
+        this.xchat = { integrationId, auth: 'oauth2' };
+        
+        // Load xchat.js if not already loaded
+        if (!window.XChatUI) {
+            const script = document.createElement('script');
+            script.src = '/xchat.js';
+            script.onload = () => window.XChatUI.open(integrationId, integration);
+            document.head.appendChild(script);
+        } else {
+            window.XChatUI.open(integrationId, integration);
         }
     }
 
@@ -797,6 +836,7 @@ class TwitterOAuthDemo {
     }
 
     classifyEvent(body) {
+        if (body.data?.event_type?.startsWith('chat.')) return 'xchat';
         if (body.direct_message_events) return 'dm';
         if (body.user_event?.revoke) return 'revoke';
         if (body.follow_events || body.user_event?.follow) return 'follow';
@@ -807,7 +847,7 @@ class TwitterOAuthDemo {
     }
 
     getEventIcon(type) {
-        const icons = { dm: '💬', revoke: '🔓', follow: '👤', tweet: '🐦', like: '❤️', unknown: '📨' };
+        const icons = { xchat: '🔐', dm: '💬', revoke: '🔓', follow: '👤', tweet: '🐦', like: '❤️', unknown: '📨' };
         return icons[type] || icons.unknown;
     }
 
@@ -815,6 +855,19 @@ class TwitterOAuthDemo {
         const body = event.body;
         const type = this.classifyEvent(body);
         const appId = event.url?.match(/\/webhook\/(\d+)/)?.[1] || '';
+
+        if (type === 'xchat') {
+            const eventType = body.data?.event_type || 'chat.unknown';
+            const userId = body.data?.filter?.user_id || '';
+            const eventUuid = body.data?.event_uuid || '';
+            return {
+                icon: this.getEventIcon(type),
+                name: `User ${userId}`,
+                text: `${eventType} [encrypted payload]`,
+                appId,
+                badge: eventUuid.slice(0, 8)
+            };
+        }
 
         if (type === 'dm') {
             const dm = body.direct_message_events[0];
@@ -906,7 +959,7 @@ class TwitterOAuthDemo {
                         <div class="webhook-event-meta">
                             <span>${date}</span>
                             <span class="badge">${s.appId}</span>
-                            <span class="badge">${bodyHash}</span>
+                            <span class="badge">${s.badge || bodyHash}</span>
                             ${dupes ? `<span class="duplicate">dupes: ${dupes}</span>` : ''}
                         </div>
                     </div>

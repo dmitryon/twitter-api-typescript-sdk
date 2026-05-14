@@ -3,6 +3,8 @@ import { createIntegration, createCredentials, listCredentials, listIntegrations
 import { oauthLogin, oauthCallback, refreshOAuth2Token, revokeOAuth1Tokens, revokeOAuth2Tokens, initAuthStorage } from "./handlers/oauth-handlers";
 import { getDMConversation, sendDM, getFollowers } from "./handlers/dm-handlers";
 import { uploadMedia, proxyMedia } from "./handlers/media-handlers";
+import { getXChatConversations, getXChatMessages, sendXChatMessage, getUserPublicKeys, uploadXChatMedia, proxyXChatMedia, updateXChatSettings, getXChatSettings } from "./handlers/xchat-handlers";
+import { getXAASubscriptions, createXAASubscription, deleteXAASubscription } from "./handlers/xaa-handlers";
 import { handleWebhook, listWebhookEvents, webhookEventBus } from "./handlers/webhook-handlers";
 import { listWebhooks, createWebhook, deleteWebhook, validateWebhook, getSubscriptionCount, listSubscriptions, createSubscription, deleteSubscription, validateSubscription, lookupUsers, proxyPublicImage } from "./handlers/webhook-mgmt-handlers";
 import { log } from './logger';
@@ -56,6 +58,21 @@ app.get("/integrations/:id/dm/followers", getFollowers);
 // Media routes
 app.post("/integrations/:integrationId/media/upload", uploadMedia);
 app.get("/integrations/:integrationId/media/proxy", proxyMedia);
+
+// X Chat routes
+app.get("/integrations/:id/xchat/settings", getXChatSettings);
+app.patch("/integrations/:id/xchat/settings", updateXChatSettings);
+app.get("/integrations/:id/xchat/conversations", getXChatConversations);
+app.get("/integrations/:id/xchat/conversations/:conversationId/messages", getXChatMessages);
+app.post("/integrations/:id/xchat/conversations/:conversationId/send", sendXChatMessage);
+app.get("/integrations/:id/xchat/users/:userId/public-keys", getUserPublicKeys);
+app.post("/integrations/:id/xchat/media/upload", uploadXChatMedia);
+app.get("/integrations/:id/xchat/media/proxy", proxyXChatMedia);
+
+// XAA (X Activity API) routes
+app.get("/integrations/:id/xaa/subscriptions", getXAASubscriptions);
+app.post("/integrations/:id/xaa/subscriptions", createXAASubscription);
+app.delete("/integrations/:id/xaa/subscriptions/:subscriptionId", deleteXAASubscription);
 
 app.get("/webhook-events", listWebhookEvents);
 app.get("/webhook-events/stream", webhookEventBus.handler);

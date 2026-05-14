@@ -35,6 +35,16 @@ export interface Integration {
   oauth2?: {
     accessTokenId: string;
   };
+  xchat?: {
+    /** 4-digit numeric PIN set by the user in the X app */
+    pin: string;
+    /** Cached private key retrieved from Juicebox using PIN + public keys */
+    private_key?: string;
+    /** Cached public key version, to detect when key has rotated */
+    public_key_version?: string;
+    /** Cached conversation keys: conversationId -> decrypted symmetric key */
+    conversation_keys?: Record<string, string>;
+  };
 }
 
 export interface AccessTokenEntry {

@@ -1,51 +1,22 @@
 import { Request, Response } from "express";
-import { Client, auth, parseTonUrl } from "twitter-api-sdk";
-import { IntegrationStorage, CredentialsStorage, AccessTokenStorage } from "../storage";
-import { oauthFromIntegration } from "../oauth-utils";
-import { FileCache } from "../file-cache";
-import path from "path";
+import { parseTonUrl } from "twitter-api-sdk";
+import { resolveAuth, mediaCache, sseResponse } from "./handler-utils";
 import { log } from "../logger";
-import { apiLogger } from "../api-logger";
-
-const integrationStorage = new IntegrationStorage();
-const credentialsStorage = new CredentialsStorage();
-const accessTokenStorage = new AccessTokenStorage();
-
-const mediaCache = new FileCache(
-  path.join(__dirname, "../data/media-cache"),
-  30 * 24 * 60 * 60 * 1000 // 30 days
-);
 
 export const uploadMedia = async (req: Request, res: Response) => {
   try {
     const { integrationId } = req.params;
-    const { auth } = req.query;
+    const { auth: authType } = req.query;
     
-    const integration = await integrationStorage.load(integrationId);
-    if (!integration) {
-      res.status(404).json({ error: "Integration not found" });
+    const resolved = await resolveAuth(integrationId, authType as string);
+    if (!resolved) {
+      res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
     }
-    
-    const authClient = await oauthFromIntegration(auth as 'oauth1' | 'oauth2', integration, credentialsStorage, accessTokenStorage, integrationStorage);
-    if (!authClient) {
-      res.status(400).json({ error: "Invalid auth method or tokens not found" });
-      return;
-    }
-    
-    const client = new Client(authClient, { logger: apiLogger });
+    const { client } = resolved;
     const { media, media_type } = req.body;
 
-    // SSE helpers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-    const sendEvent = (data: Record<string, any>) => {
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-      if (typeof (res as any).flush === 'function') (res as any).flush();
-    };
+    const sendEvent = sseResponse(res);
     
     if (media_type?.startsWith('image/') && media_type !== 'image/gif') {
       const mediaBuffer = Buffer.from(media, 'base64');
@@ -149,7 +120,7 @@ export const uploadMedia = async (req: Request, res: Response) => {
 export const proxyMedia = async (req: Request, res: Response) => {
   try {
     const { integrationId } = req.params;
-    const { auth, url } = req.query;
+    const { auth: authType, url } = req.query;
     
     if (!url) {
       res.status(400).json({ error: "URL parameter required" });
@@ -164,24 +135,18 @@ export const proxyMedia = async (req: Request, res: Response) => {
       return;
     }
     
-    const integration = await integrationStorage.load(integrationId);
-    if (!integration) {
-      res.status(404).json({ error: "Integration not found" });
+    const resolved = await resolveAuth(integrationId, authType as string);
+    if (!resolved) {
+      res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
     }
-    
-    const authClient = await oauthFromIntegration(auth as 'oauth1' | 'oauth2', integration, credentialsStorage, accessTokenStorage, integrationStorage);
-    if (!authClient) {
-      res.status(400).json({ error: "Invalid auth method or tokens not found" });
-      return;
-    }
+    const { client, authClient } = resolved;
 
     let response;
     const mediaUrl = new URL(url as string);
     const isPublicCdn = mediaUrl.hostname === 'pbs.twimg.com' || mediaUrl.hostname === 'video.twimg.com';
-    const tonParams = auth === 'oauth2' ? parseTonUrl(url as string) : null;
+    const tonParams = authType === 'oauth2' ? parseTonUrl(url as string) : null;
     if (tonParams) {
-      const client = new Client(authClient, { logger: apiLogger });
       response = await client.directmessages.dmConversationsMediaDownload(tonParams.dm_id, tonParams.media_id, tonParams.resource_id);
     } else if (isPublicCdn) {
       response = await fetch(url as string);
