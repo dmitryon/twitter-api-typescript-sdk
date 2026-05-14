@@ -1,7 +1,7 @@
 // Copyright 2021 Twitter, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { AuthClient, AuthHeader } from "./types";
+import { AuthClient, AuthHeader, AuthState } from "./types";
 
 export class OAuth2Bearer implements AuthClient {
   private bearer_token: string;
@@ -10,9 +10,17 @@ export class OAuth2Bearer implements AuthClient {
     this.bearer_token = bearer_token;
   }
 
-  getAuthHeader(): AuthHeader {
+  async getAuthHeader(): Promise<AuthHeader> {
     return {
-      Authorization: `Bearer ${this.bearer_token}`,
+      Authorization: `Bearer ${this.bearer_token}`
     };
+  }
+
+  getAuthState(): AuthState {
+    return {};
+  }
+
+  setAuthState(state: AuthState): void {
+    // No intermediate state for bearer token
   }
 }
