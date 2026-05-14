@@ -3,3 +3,5 @@
 
 export * from './OAuth2User'
 export * from "./OAuth2Bearer";
+export * from './OAuth1User';
+export * from './OAuth2AppHandler';
