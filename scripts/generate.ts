@@ -68,7 +68,8 @@ function functionParameters(
   operationId: string,
   requestBody: (RequestBody & Record<string, any>) | undefined,
   responseBody: SchemaObject | undefined,
-  isStreaming: boolean
+  isStreaming: boolean,
+  isBinary: boolean
 ) {
   let output = "";
   const args = pathVariables
@@ -98,7 +99,7 @@ function functionParameters(
     ) &&
     !!(responseBody?.properties?.meta as SchemaObject | undefined)?.properties
       ?.next_token;
-  const type = isPaginated ? "paginate" : isStreaming ? "stream" : "rest";
+  const type = isPaginated ? "paginate" : isStreaming ? "stream" : isBinary ? "binary" : "rest";
   const optionalParams = needsPathQuery && !pathQueryRequired;
   const optionalRequestBody = !requestBodyRequired;
   output += `${operationId}: (`;
@@ -128,11 +129,14 @@ function functionParameters(
     case "stream":
       output += `AsyncGenerator<TwitterResponse<${operationId}>>`;
       break;
+    case "binary":
+      output += `Promise<Response>`;
+      break;
     default:
       output += `Promise<TwitterResponse<${operationId}>> `;
   }
   output += ` => `;
-  output += `${type}<${responseType}>({ auth: this.#auth, ...this.#defaultRequestOptions, ...request_options, endpoint: \`${pathKey.replace(
+  output += `${type === "binary" ? "request" : type}${type === "binary" ? "" : `<${responseType}>`}({ auth: this.#auth, ...this.#defaultRequestOptions, ...request_options, endpoint: \`${pathKey.replace(
     /{/g,
     "${"
   )}\``;
@@ -209,9 +213,10 @@ This file is auto-generated
 Do not make direct changes to this file
 */
 
-import { rest, stream, paginate, RequestOptions } from '../request'
+import { rest, stream, paginate, request, RequestOptions } from '../request'
 import { AuthClient, TwitterResponse, TwitterBody, TwitterParams, TwitterPaginatedResponse } from '../types'
-import { OAuth2Bearer } from "../auth";\n\n`;
+import { OAuth2Bearer } from "../auth";
+import type { Response } from "node-fetch";\n\n`;
 
   if (!paths) return;
 
@@ -250,6 +255,7 @@ import { OAuth2Bearer } from "../auth";\n\n`;
           : undefined
       ) as ResponseObject;
       const isStreaming = method["x-twitter-streaming"] === true;
+      const isBinary = !!(okResponse?.content as any)?.["application/octet-stream"];
 
       operationIds.push(operationId);
 
@@ -283,7 +289,8 @@ import { OAuth2Bearer } from "../auth";\n\n`;
             operationId,
             requestBody,
             responseBody,
-            isStreaming
+            isStreaming,
+            isBinary
           )
       );
     });

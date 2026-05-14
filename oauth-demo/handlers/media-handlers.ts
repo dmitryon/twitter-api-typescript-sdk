@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { Client, auth, getDMMedia, parseTonUrl } from "twitter-api-sdk";
+import { Client, auth, parseTonUrl } from "twitter-api-sdk";
 import { IntegrationStorage, CredentialsStorage, AccessTokenStorage } from "../storage";
 import { oauthFromIntegration } from "../oauth-utils";
 import { FileCache } from "../file-cache";
@@ -181,7 +181,8 @@ export const proxyMedia = async (req: Request, res: Response) => {
     const isPublicCdn = mediaUrl.hostname === 'pbs.twimg.com' || mediaUrl.hostname === 'video.twimg.com';
     const tonParams = auth === 'oauth2' ? parseTonUrl(url as string) : null;
     if (tonParams) {
-      response = await getDMMedia(authClient, tonParams);
+      const client = new Client(authClient, { logger: apiLogger });
+      response = await client.directmessages.dmConversationsMediaDownload(tonParams.dm_id, tonParams.media_id, tonParams.resource_id);
     } else if (isPublicCdn) {
       response = await fetch(url as string);
     } else {

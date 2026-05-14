@@ -5,5 +5,5 @@ export * as auth from "./auth";
 export * as types from './types'
 export { Client } from "./gen/Client";
 export { Client as default } from "./gen/Client";
-export { getDMMedia, parseTonUrl, DMMediaParams } from "./dmMedia";
+export { parseTonUrl, DMMediaParams } from "./dmMedia";
 export { ApiCallLogger, ApiCallLogEntry } from "./request";

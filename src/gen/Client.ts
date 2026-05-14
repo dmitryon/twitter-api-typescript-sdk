@@ -6,7 +6,7 @@ This file is auto-generated
 Do not make direct changes to this file
 */
 
-import { rest, stream, paginate, RequestOptions } from "../request";
+import { rest, stream, paginate, request, RequestOptions } from "../request";
 import {
   AuthClient,
   TwitterResponse,
@@ -15,6 +15,7 @@ import {
   TwitterPaginatedResponse,
 } from "../types";
 import { OAuth2Bearer } from "../auth";
+import type { Response } from "node-fetch";
 
 import {
   getAccountActivitySubscriptionCount,
@@ -3236,8 +3237,8 @@ The request body must contain the conversation key version and participant keys
       id: string,
       media_hash_key: string,
       request_options?: Partial<RequestOptions>
-    ): Promise<TwitterResponse<chatMediaDownload>> =>
-      rest<TwitterResponse<chatMediaDownload>>({
+    ): Promise<Response> =>
+      request({
         auth: this.#auth,
         ...this.#defaultRequestOptions,
         ...request_options,
@@ -3366,8 +3367,8 @@ The request body must contain the conversation key version and participant keys
       media_id: string,
       resource_id: string,
       request_options?: Partial<RequestOptions>
-    ): Promise<TwitterResponse<dmConversationsMediaDownload>> =>
-      rest<TwitterResponse<dmConversationsMediaDownload>>({
+    ): Promise<Response> =>
+      request({
         auth: this.#auth,
         ...this.#defaultRequestOptions,
         ...request_options,

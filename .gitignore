@@ -2,4 +2,15 @@ node_modules
 dist
 examples/node_modules
 examples/.env
+examples/package-lock.json
+examples/webhooks.log
 /oauth-demo/data/
+oauth-demo/.env
+oauth-demo/ssl/
+.idea/
+*.pem
+package-lock.json
+src/gen/*.js
+ssl/
+java-models/
+*.pdf
