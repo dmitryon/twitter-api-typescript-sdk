@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitter OAuth Demo</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Twitter OAuth Integrations</h1>
+            <div class="header-buttons">
+                <button id="addCredentialsBtn" class="btn btn-secondary">Add Credentials</button>
+                <button id="addIntegrationBtn" class="btn btn-primary">Add Integration</button>
+                <button id="webhookMgmtBtn" class="btn btn-webhook">🔗 Webhooks</button>
+                <button id="webhookEventsBtn" class="btn btn-webhook">📨 Events</button>
+            </div>
+        </header>
+        
+        <div id="integrationsList" class="integrations-list">
+            <!-- Integration cards will be inserted here -->
+        </div>
+    </div>
+
+    <!-- Add Credentials Modal -->
+    <div id="addCredentialsModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Add Twitter Application Credentials</h2>
+            <form id="addCredentialsForm">
+                <input type="text" id="appId" placeholder="Application ID" required>
+                <input type="text" id="credentialsName" placeholder="Application Name" required>
+                <input type="url" id="oauthCallbackUrl" placeholder="OAuth Callback URL" required>
+                <input type="text" id="consumerKey" placeholder="Consumer Key (OAuth1)">
+                <input type="text" id="consumerSecret" placeholder="Consumer Secret (OAuth1)">
+                <input type="text" id="clientId" placeholder="Client ID (OAuth2)">
+                <input type="text" id="clientSecret" placeholder="Client Secret (OAuth2)">
+                <button type="submit" class="btn btn-primary">Save Credentials</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Add Integration Modal -->
+    <div id="addIntegrationModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Add New Integration</h2>
+            <form id="addIntegrationForm">
+                <input type="text" id="integrationName" placeholder="Integration Name" required>
+                <select id="appSelect" required>
+                    <option value="">Select Application</option>
+                </select>
+                <button type="submit" class="btn btn-primary">Create Integration</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Webhook Management Modal -->
+    <div id="webhookModal" class="modal">
+        <div class="modal-content webhook-dialog">
+            <span class="close">&times;</span>
+            <h2>🔗 Webhook Management</h2>
+            <div class="webhook-controls">
+                <label>Select Application:</label>
+                <select id="webhookAppSelect"></select>
+            </div>
+            <div class="webhook-section">
+                <div class="webhook-section-header">
+                    <h3>Webhooks</h3>
+                    <div class="webhook-actions">
+                        <input type="url" id="newWebhookUrl" placeholder="Webhook URL">
+                        <button class="btn btn-primary btn-sm" onclick="app.createWebhook()">Register</button>
+                    </div>
+                </div>
+                <div id="webhooksList" class="webhooks-list"></div>
+            </div>
+            <div class="webhook-section">
+                <h3>Subscription Count</h3>
+                <div id="subscriptionCount" class="sub-count"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Subscriptions Modal -->
+    <div id="subscriptionsModal" class="modal">
+        <div class="modal-content subscriptions-dialog">
+            <span class="close">&times;</span>
+            <h2>Subscriptions</h2>
+            <p id="subscriptionsWebhookTitle" class="webhook-id-label"></p>
+            <div class="webhook-actions subscribe-controls">
+                <select id="subscriptionIntegrationSelect"></select>
+                <select id="subscriptionAuthSelect">
+                    <option value="oauth1">OAuth1</option>
+                    <option value="oauth2">OAuth2</option>
+                </select>
+                <button class="btn btn-primary btn-sm" onclick="app.createSubscription()">Subscribe</button>
+            </div>
+            <div id="subscriptionsList" class="webhooks-list subscriptions-scroll"></div>
+        </div>
+    </div>
+
+    <!-- Chat Dialog -->
+    <div id="chatModal" class="modal">
+        <div class="modal-content chat-dialog">
+            <div class="chat-header">
+                <div>
+                    <h3 id="chatParticipantName">Loading...</h3>
+                    <p id="chatAuthMethod"></p>
+                </div>
+                <span class="close" onclick="app.closeChat()">&times;</span>
+            </div>
+            <div class="chat-messages" id="chatMessages">
+                <div class="loading">Loading messages...</div>
+            </div>
+            <div class="chat-input">
+                <input type="file" id="chatFileInput" accept="image/*,video/*" style="display:none">
+                <button class="btn btn-secondary" onclick="document.getElementById('chatFileInput').click()">📎</button>
+                <div id="chatPendingMedia" class="pending-media" style="display:none"></div>
+                <input type="text" id="chatMessageInput" placeholder="Type a message..." onkeypress="if(event.key==='Enter')app.sendChatMessage()">
+                <button class="btn btn-primary" onclick="app.sendChatMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Webhook Events Modal -->
+    <div id="webhookEventsModal" class="modal">
+        <div class="modal-content webhook-events-dialog">
+            <span class="close">&times;</span>
+            <h2>📨 Webhook Events</h2>
+            <div id="webhookEventsList" class="webhook-events-list"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
