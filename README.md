@@ -194,3 +194,13 @@ yarn build
 yarn test
 ```
 
+# Testing Account Activity API
+Link local client library
+`yarn build`
+`npm run build`
+`npm link`
+`npm link twitter-api-sdk`
+
+`brew install ngrok`
+
+`ngrok http 8300`
