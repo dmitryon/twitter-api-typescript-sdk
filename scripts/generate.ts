@@ -179,7 +179,7 @@ export async function generate(): Promise<void> {
       .readFile(path.resolve(__dirname, specFilePath), "utf8")
       .then(JSON.parse);
   } else {
-    spec = await fetch("https://api.twitter.com/2/openapi.json").then((x) =>
+    spec = await fetch("https://api.x.com/2/openapi.json").then((x) =>
       x.json()
     );
   }
@@ -254,7 +254,18 @@ import { OAuth2Bearer } from "../auth";\n\n`;
       operationIds.push(operationId);
 
       if (!tags?.length) throw "No tags found";
-      const tag = tags[0].toLowerCase();
+      const tag = tags[0].replace(' ', '').toLowerCase();
+      if (classes[tag] === undefined) {
+        classes[tag] = {
+          "functions": [],
+          "name": tag,
+          "description": `${tag} API`,
+          "externalDocs": {
+            "description": "Find out more",
+            "url": "https://developer.x.com"
+          }
+        }
+      }
       classes[tag].functions.push(
         functionDocs(
           summary,
