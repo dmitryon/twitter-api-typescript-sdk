@@ -1,6 +1,7 @@
 import express from 'express';
 import https from 'https';
 import fs from 'fs';
+import { execSync } from 'child_process';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 
@@ -107,8 +108,6 @@ app.use((error: Error, req: express.Request, res: express.Response, next: expres
 
 // Function to create SSL certificates if they don't exist
 function createSelfSignedCert() {
-    const { execSync } = require('child_process');
-    
     try {
         // Create ssl directory if it doesn't exist
         if (!fs.existsSync('./ssl')) {

@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { resolveAuth, mediaCache, sseResponse, integrationStorage } from "./handler-utils";
 import { log } from "../logger";
+import { Chat } from "../chat-crypto";
 import crypto from "crypto";
 
 export const getXChatConversations = async (req: Request, res: Response) => {
@@ -89,44 +90,48 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
       return;
     }
 
-    // TODO: when chat-xdk TypeScript bindings are available, replace this stub with:
-    //
-    // Encryption stack (deduced from xchat-bot-python + Go bot source + OpenAPI spec):
-    //   Wire format:  Apache Thrift MessageCreateEvent struct → binary → base64
-    //   Signing keys: Ed25519 (signing_public_key / signing private key)
-    //   Enc keys:     X25519 identity key pair (public_key / private key from Juicebox)
-    //   Conv key:     32-byte AES-256 symmetric key, wrapped per-participant via
-    //                 ECIES (X25519 ephemeral + HKDF + AES-GCM)
-    //   Message enc:  AES-256-GCM with the decrypted conversation key
-    //   KeyChange:    decryptable with empty key (uses identity key directly)
-    //
-    //   const privateKey = xchat.private_key
-    //     ?? await xdk.unlock(xchat.pin, juiceboxConfig);  // Juicebox threshold secret sharing
-    //   const encKey = xchat.conversation_keys?.[conversationId]  // encrypted_conversation_key from event payload
-    //     ?? await xdk.decryptConversationKeyFromKeyChangeEvent(privateKey, keyChangeEvent);
-    //   const payload = chat.encrypt_message_for_api(
-    //     message_id,
-    //     user_id,
-    //     conversationId,
-    //     encKey,                    // base64 AES-256 conversation key (still wrapped)
-    //     text,
-    //     key_version,               // conversation_key_version from event payload
-    //     xchat.signing_key_version  // data.version from GET /2/users/{id}/public_keys
-    //   );
-    //   encoded_message_create_event  = payload.encrypted_content        // Thrift → AES-GCM → base64
-    //   encoded_message_event_signature = payload.encoded_event_signature // Ed25519 → Thrift → base64
-    const messagePayload: any = { text, pin_used: !!xchat.pin, private_key_cached: !!xchat.private_key };
-    if (media_hash_key) messagePayload.media = { media_hash_key };
-    const encoded_message_create_event = Buffer.from(JSON.stringify(messagePayload)).toString('base64');
     const message_id = crypto.randomUUID();
-    // Normalise conv_id: ':' separator → '-' for the API URL (as per xchat-bot reference)
     const apiConvId = conversationId.replace(/:/g, '-');
+    let encoded_message_create_event: string;
+    let encoded_message_event_signature: string | undefined;
 
-    log.info('xchat', `Sending message to ${conversationId} — PIN: set, private_key: ${xchat.private_key ? 'cached' : 'not cached'} (stub encryption)`);
+    if (xchat.private_key && (xchat.conversation_keys?.[conversationId] || req.body.encrypted_conversation_key)) {
+      const encryptedConvKey = xchat.conversation_keys?.[conversationId] ?? req.body.encrypted_conversation_key;
+      const chat = new Chat();
+      chat.importKeys(JSON.stringify({
+        x25519: xchat.private_key,
+        ed25519: xchat.private_key,
+        ed25519_pub: xchat.public_key_version ?? '',
+      }));
+      try {
+        const payload = chat.encryptMessageForApi(
+          message_id,
+          id,
+          conversationId,
+          encryptedConvKey,
+          text,
+          key_version ?? '1',
+          xchat.signing_key_version ?? '1',
+        );
+        encoded_message_create_event = payload.encrypted_content;
+        encoded_message_event_signature = payload.encoded_event_signature;
+        log.info('xchat', `Encrypted message for ${conversationId} (X25519+AES-256-GCM+Ed25519)`);
+      } catch (encErr: any) {
+        log.warn('xchat', `Encryption failed (${encErr.message}), falling back to stub`);
+        encoded_message_create_event = Buffer.from(JSON.stringify({ text, stub: true })).toString('base64');
+        encoded_message_event_signature = undefined;
+      }
+    } else {
+      log.info('xchat', `Sending stub — private_key: ${!!xchat.private_key}, conv_key: ${!!xchat.conversation_keys?.[conversationId]}`);
+      const messagePayload: any = { text, pin_used: true, private_key_cached: !!xchat.private_key };
+      if (media_hash_key) messagePayload.media = { media_hash_key };
+      encoded_message_create_event = Buffer.from(JSON.stringify(messagePayload)).toString('base64');
+      encoded_message_event_signature = undefined;
+    }
 
     const response = await resolved.client.chat.sendChatMessage(apiConvId, {
       encoded_message_create_event,
-      encoded_message_event_signature: encoded_message_create_event, // stub — real value from chat.encrypt_message_for_api().encoded_event_signature
+      ...(encoded_message_event_signature ? { encoded_message_event_signature } : {}),
       message_id,
       ...(conversation_token ? { conversation_token } : {}),
     });
