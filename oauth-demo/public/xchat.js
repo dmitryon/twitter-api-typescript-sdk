@@ -237,7 +237,12 @@ window.XChatUI = (() => {
       const res = await fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/send?auth=${state.auth}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, media_hash_key })
+        body: JSON.stringify({
+          text,
+          media_hash_key,
+          conversation_token: state.conversationToken,
+          key_version: state.keyVersion,
+        })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Send failed');

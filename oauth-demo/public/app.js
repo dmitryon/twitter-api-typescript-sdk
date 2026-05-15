@@ -505,7 +505,6 @@ class TwitterOAuthDemo {
     }
 
     async startLegacyDM(integrationId) {
-    async startLegacyDM(integrationId) {
         try {
             const response = await fetch(`/integrations/${integrationId}/dm/followers`);
             const followers = await response.json();
@@ -860,10 +859,13 @@ class TwitterOAuthDemo {
             const eventType = body.data?.event_type || 'chat.unknown';
             const userId = body.data?.filter?.user_id || '';
             const eventUuid = body.data?.event_uuid || '';
+            const payload = body.data?.payload || {};
+            const convId = payload.conversation_id || '';
+            const senderId = payload.sender_id || '';
             return {
                 icon: this.getEventIcon(type),
                 name: `User ${userId}`,
-                text: `${eventType} [encrypted payload]`,
+                text: `${eventType} — conv: ${convId}${senderId ? ` from: ${senderId}` : ''} [encrypted]`,
                 appId,
                 badge: eventUuid.slice(0, 8)
             };

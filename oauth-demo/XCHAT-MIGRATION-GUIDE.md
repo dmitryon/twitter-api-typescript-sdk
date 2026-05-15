@@ -25,6 +25,68 @@
 
 ---
 
+## Encryption Stack
+
+Deduced from the xchat-bot-python and xchat-bot-go reference implementations, the OpenAPI spec, and the chat-xdk API surface.
+
+### Key Types
+
+| Key | Algorithm | Purpose |
+|-----|-----------|--------|
+| `public_key` / private key | X25519 (Curve25519) | Key agreement — wrapping/unwrapping conversation keys |
+| `signing_public_key` / signing private key | Ed25519 | Message signing / verification |
+
+Both key pairs are stored in **Juicebox** — a distributed PIN-based threshold secret sharing system. The user's 4-digit PIN unlocks the private keys from Juicebox realms.
+
+### Conversation Key
+
+A 32-byte AES-256 symmetric key, unique per conversation and versioned (`conversation_key_version`). Wrapped per-participant using their X25519 public key via ECIES:
+
+```
+X25519 ephemeral key exchange → HKDF → AES-GCM → encrypted_conversation_key (base64)
+```
+
+The `encrypted_conversation_key` arrives in each event payload. The chat-xdk decrypts it using the recipient's X25519 private key.
+
+### Message Encryption
+
+```
+plaintext
+  → Apache Thrift MessageCreateEvent struct (binary serialization)
+  → AES-256-GCM encrypt with conversation key
+  → base64
+  = encoded_message_create_event
+```
+
+### Message Signing
+
+```
+message event
+  → Apache Thrift MessageEventSignature struct
+  → Ed25519 sign with signing private key
+  → base64
+  = encoded_message_event_signature
+```
+
+### KeyChange Events
+
+When a conversation key rotates, a `conversation_key_change_event` is included in the payload instead of `encrypted_conversation_key`. KeyChange events are decryptable with an empty key. The chat-xdk's `decrypt_event(event, "")` handles this — iterate `participant_keys` and try each `encrypted_key` until one decrypts successfully.
+
+### Juicebox Key Recovery
+
+The `juicebox_config` from `GET /2/users/{id}/public_keys` contains:
+- `key_store_token_map_json` — SDK configuration
+- `token_map` — per-realm JWT auth tokens
+- `max_guess_count` — PIN attempt limit
+
+The chat-xdk normalises this into `{ sdk_config, tokens, max_guess_count }` and calls `chat.unlock(pin, juiceboxConfig)` to retrieve the private keys.
+
+### Wire Format Note
+
+Apache Thrift is used purely as the **serialization format** for message structs before encryption — not the encryption mechanism itself. The `.thrift` schema for `MessageCreateEvent` is internal to the chat-xdk.
+
+---
+
 ## Background / Rationale
 
 The X Platform has rewritten its Direct Messaging stack from the bottom up, shifting to a fully end-to-end encrypted model.
@@ -169,11 +231,7 @@ App -> App: You can store keys for user,\nor request them for each message tx/rx
 
 User -> App: Send Message request with plaintext
 note over App
-  Encrypt and sign message using XDK w/ private key:
-  1. Decrypt conversation key using private key
-  2. Encrypt plaintext using conversation key
-  3. Sign with private signing key
-  4. Serialize as Thrift MessageCreateEvent → base64
+  Encrypt and sign message using XDK w/ private key
 end note
 App -> X: POST /2/chat/conversations/{id}/messages\n{ encoded_message_create_event, message_id }
 X --> App: Success

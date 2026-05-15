@@ -31,6 +31,23 @@
 - PIN is 4 digits, stored on integration. Private key and conversation keys cached on integration. Never returned in API responses — only presence reported.
 - Legacy DM flow and Account Activity webhooks remain fully functional.
 
+### Encryption Stack
+
+Deduced from xchat-bot-python, xchat-bot-go, OpenAPI spec, and chat-xdk API surface.
+
+| Layer | Detail |
+|-------|--------|
+| Key agreement | X25519 (Curve25519) — `public_key` field |
+| Signing | Ed25519 — `signing_public_key` field |
+| Key custody | Juicebox (PIN-based threshold secret sharing across realms) |
+| Conversation key | 32-byte AES-256 symmetric, wrapped per-participant via ECIES (X25519 + HKDF + AES-GCM) |
+| Message encryption | AES-256-GCM with decrypted conversation key |
+| Wire format | Apache Thrift `MessageCreateEvent` struct → binary → base64 (serialization only, not encryption) |
+| Message signing | Ed25519 → Thrift `MessageEventSignature` → base64 |
+| KeyChange events | Decryptable with empty key; iterate `participant_keys` until one decrypts |
+
+The `encrypted_conversation_key` in each event payload is the AES-256 conversation key wrapped with the recipient's X25519 public key. The chat-xdk decrypts it using the private key retrieved from Juicebox via PIN.
+
 ---
 
 ## Design
@@ -179,11 +196,12 @@ alt PIN not set
 else PIN set
   note over BE
     TODO (requires chat-xdk in TypeScript):
-    1. If private_key not cached:
-       retrieve from Juicebox using PIN + public_keys
-    2. Decrypt conversation key using private_key
-    3. Encrypt message using conversation key
-    4. Serialize as Thrift MessageCreateEvent → base64
+    1. unlock(pin, juiceboxConfig) → private key (X25519 + Ed25519)
+    2. decrypt_conversation_key(encKey) → AES-256 conversation key
+    3. Thrift serialize MessageCreateEvent
+    4. AES-256-GCM encrypt with conversation key
+    5. base64 → encoded_message_create_event
+    6. Ed25519 sign → encoded_message_event_signature
     ---
     Current stub: base64(JSON({ text, media_hash_key }))
   end note
