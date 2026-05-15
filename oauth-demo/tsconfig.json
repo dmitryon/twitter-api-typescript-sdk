@@ -6,7 +6,12 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "paths": {
+      "@noble/curves/ed25519.js": ["./node_modules/@noble/curves/ed25519.d.ts"],
+      "@noble/hashes/hkdf.js":    ["./node_modules/@noble/hashes/hkdf.d.ts"],
+      "@noble/hashes/sha2.js":    ["./node_modules/@noble/hashes/sha2.d.ts"]
+    }
   },
   "ts-node": {
     "esm": true,
