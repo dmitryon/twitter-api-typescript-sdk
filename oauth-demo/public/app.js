@@ -989,6 +989,33 @@ class TwitterOAuthDemo {
         select.onchange = () => this.loadWebhooks();
         document.getElementById('webhookModal').style.display = 'block';
         this.loadWebhooks();
+        this.loadWebhookConfig();
+    }
+
+    async loadWebhookConfig() {
+        try {
+            const res = await fetch('/webhook-config');
+            const data = await res.json();
+            document.getElementById('crcDelayMs').value = data.crcDelayMs;
+            document.getElementById('webhookDelayMs').value = data.webhookDelayMs;
+        } catch (e) {
+            console.error('Failed to load webhook config:', e);
+        }
+    }
+
+    async saveWebhookConfig() {
+        const crcDelayMs = parseInt(document.getElementById('crcDelayMs').value) || 0;
+        const webhookDelayMs = parseInt(document.getElementById('webhookDelayMs').value) || 0;
+        try {
+            await fetch('/webhook-config', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ crcDelayMs, webhookDelayMs })
+            });
+        } catch (e) {
+            console.error('Failed to save webhook config:', e);
+            alert('Failed to save config');
+        }
     }
 
     get selectedAppId() {

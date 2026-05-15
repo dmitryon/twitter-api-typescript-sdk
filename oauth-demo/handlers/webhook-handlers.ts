@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { log } from "../logger";
 import { CredentialsStorage } from "../storage";
 import { EventBus } from "../event-bus";
+import { webhookDelayConfig } from "../webhook-config";
 
 const webhookLogDir = path.join(__dirname, "../data/webhooks");
 const credentialsStorage = new CredentialsStorage();
@@ -66,12 +67,10 @@ export const handleWebhook = async (req: Request, res: Response) => {
         const response_token = "sha256=" + hmac.digest("base64");
         log.info('webhook', `CRC response ready for app ${appId}, sending now`);
 
-        // Testing CRC check timeout for webhook URLs (17:45 UTC)
-        // 4000 succeeds
-        // 5000 should fail - verify Twitter behavior
-        // 1. does it resend CRC,
-        // 2. will it send webhooks if I send a DM
-        // await new Promise((resolve) => setTimeout(resolve, 4000));
+        if (webhookDelayConfig.crcDelayMs > 0) {
+            log.info('webhook', `CRC delay: ${webhookDelayConfig.crcDelayMs}ms`);
+            await new Promise((resolve) => setTimeout(resolve, webhookDelayConfig.crcDelayMs));
+        }
 
         res.json({ response_token });
         return;
@@ -134,6 +133,11 @@ export const handleWebhook = async (req: Request, res: Response) => {
             const ts = parseInt(f.replace(`webhook-${bodyHash}-`, "").replace(".json", ""));
             return new Date(ts).toISOString();
         })});
+
+        if (webhookDelayConfig.webhookDelayMs > 0) {
+            log.info('webhook', `Webhook reply delay: ${webhookDelayConfig.webhookDelayMs}ms`);
+            await new Promise(r => setTimeout(r, webhookDelayConfig.webhookDelayMs));
+        }
 
         // Slowly stream JSON response to test Twitter's timeout behavior
         const responseJson = JSON.stringify({ status: "received" });

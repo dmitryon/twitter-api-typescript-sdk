@@ -79,6 +79,20 @@
                 <h3>Subscription Count</h3>
                 <div id="subscriptionCount" class="sub-count"></div>
             </div>
+            <div class="webhook-section">
+                <h3>Reply Delays</h3>
+                <div class="webhook-actions" style="flex-wrap:wrap;gap:8px">
+                    <label style="display:flex;align-items:center;gap:6px">
+                        CRC delay (ms):
+                        <input type="number" id="crcDelayMs" min="0" step="100" style="width:90px">
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px">
+                        Webhook reply delay (ms):
+                        <input type="number" id="webhookDelayMs" min="0" step="100" style="width:90px">
+                    </label>
+                    <button class="btn btn-primary btn-sm" onclick="app.saveWebhookConfig()">Save</button>
+                </div>
+            </div>
         </div>
     </div>
 

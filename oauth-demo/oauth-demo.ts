@@ -7,6 +7,7 @@ import { getXChatConversations, getXChatMessages, sendXChatMessage, getUserPubli
 import { getXAASubscriptions, createXAASubscription, deleteXAASubscription } from "./handlers/xaa-handlers";
 import { handleWebhook, listWebhookEvents, webhookEventBus } from "./handlers/webhook-handlers";
 import { listWebhooks, createWebhook, deleteWebhook, validateWebhook, getSubscriptionCount, listSubscriptions, createSubscription, deleteSubscription, validateSubscription, lookupUsers, proxyPublicImage } from "./handlers/webhook-mgmt-handlers";
+import { getWebhookConfig, updateWebhookConfig } from "./webhook-config";
 import { log } from './logger';
 import dotenv from 'dotenv';
 dotenv.config({ path: '.env' });
@@ -103,6 +104,10 @@ app.delete("/credentials/:appId/webhooks/:webhookId/subscriptions/:userId", dele
 app.get("/credentials/:appId/webhooks/:webhookId/subscriptions/validate", validateSubscription);
 app.get("/credentials/:appId/users", lookupUsers);
 app.get("/media/proxy/public", proxyPublicImage);
+
+// Webhook delay config
+app.get("/webhook-config", getWebhookConfig);
+app.patch("/webhook-config", updateWebhookConfig);
 
 // Chat page route
 app.get("/integrations/:integrationId/conversation/:userId/:participantId", (req, res) => {
