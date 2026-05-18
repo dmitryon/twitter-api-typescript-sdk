@@ -3,12 +3,15 @@ import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 import { log } from "../logger";
-import { CredentialsStorage } from "../storage";
+import { CredentialsStorage, UserXChatStorage, ConversationKeyStorage } from "../storage";
 import { EventBus } from "../event-bus";
-import { webhookDelayConfig } from "../webhook-config";
+import { webhookDelayConfig } from "./webhook-config";
+import { __dirname } from "../esm-utils";
 
-const webhookLogDir = path.join(__dirname, "../data/webhooks");
+const webhookLogDir = path.join(__dirname(import.meta.url), "../data/webhooks");
 const credentialsStorage = new CredentialsStorage();
+const userXChatStorage = new UserXChatStorage();
+const conversationKeyStorage = new ConversationKeyStorage();
 
 export const webhookEventBus = new EventBus();
 
@@ -127,9 +130,17 @@ export const handleWebhook = async (req: Request, res: Response) => {
 
         log.info('webhook', `Event received from ${req.ip}`, webhookData.body);
 
-        await fs.writeFile(filePath, JSON.stringify(webhookData, null, 2));
+        // Attempt to decrypt xchat events
+        let decrypted: any = undefined;
+        try {
+          decrypted = await decryptXChatWebhook(webhookData.body);
+        } catch (e: any) {
+          log.debug('webhook', `xchat decrypt skipped: ${e.message}`);
+        }
 
-        webhookEventBus.broadcast({ filename, ...webhookData, duplicateDates: existing.map(f => {
+        await fs.writeFile(filePath, JSON.stringify({ ...webhookData, decrypted }, null, 2));
+
+        webhookEventBus.broadcast({ filename, ...webhookData, decrypted, duplicateDates: existing.map(f => {
             const ts = parseInt(f.replace(`webhook-${bodyHash}-`, "").replace(".json", ""));
             return new Date(ts).toISOString();
         })});
@@ -153,3 +164,128 @@ export const handleWebhook = async (req: Request, res: Response) => {
         res.status(status).json({ error: error.error || error.message || "Unknown error" });
     }
 };
+
+
+/**
+ * Attempt to decrypt an xchat webhook event.
+ * Returns decrypted content or undefined if not an xchat event or decryption fails.
+ */
+async function decryptXChatWebhook(body: any): Promise<any> {
+  const payload = body?.data?.payload;
+  const eventType = body?.data?.event_type;
+  if (!payload || !eventType?.startsWith('chat.')) return undefined;
+
+  const userId = body.data.filter?.user_id;
+  if (!userId) throw new Error('no user_id in filter');
+
+  const xchat = await userXChatStorage.load(userId);
+  if (!xchat?.private_key) throw new Error('no private key for user');
+
+  const keys = JSON.parse(xchat.private_key);
+  const { unwrapConversationKey, secretboxDecrypt } = await import('../xchat/chat-crypto');
+  const { decodeMessageEntryHolder, extractContentsFromMessageEvent } = await import('../xchat/chat-thrift');
+
+  const conversationId = payload.conversation_id;
+  let convKey: Buffer | null = null;
+
+  // Step 1: Try to extract conversation key from key_change_event
+  if (payload.conversation_key_change_event) {
+    log.debug('webhook', `[xchat-decrypt] extracting conversation key from key_change_event`);
+    try {
+      convKey = extractConversationKey(payload.conversation_key_change_event, userId, keys.decryptKeyB64, unwrapConversationKey);
+      if (convKey && conversationId) {
+        await conversationKeyStorage.save({
+          id: conversationId,
+          encrypted_conversation_key: getOurEncryptedKey(payload.conversation_key_change_event, userId),
+          key_version: payload.conversation_key_version || '',
+          cached_at: new Date().toISOString(),
+        });
+        log.info('webhook', `[xchat-decrypt] conversation key cached for ${conversationId} (version=${payload.conversation_key_version})`);
+      }
+    } catch (e: any) {
+      log.warn('webhook', `[xchat-decrypt] key extraction failed: ${e.message}`);
+    }
+  }
+
+  // Step 2: If no key from event, try cached
+  if (!convKey && conversationId) {
+    const cached = await conversationKeyStorage.load(conversationId);
+    if (cached?.encrypted_conversation_key) {
+      try {
+        convKey = unwrapConversationKey(cached.encrypted_conversation_key, keys.decryptKeyB64);
+        log.debug('webhook', `[xchat-decrypt] using cached conversation key for ${conversationId}`);
+      } catch (e: any) {
+        log.warn('webhook', `[xchat-decrypt] cached key unwrap failed: ${e.message}`);
+      }
+    }
+  }
+
+  if (!convKey) throw new Error('no conversation key available');
+
+  // Step 3: Decrypt the encoded_event
+  if (!payload.encoded_event) throw new Error('no encoded_event in payload');
+
+  log.debug('webhook', `[xchat-decrypt] decrypting message from ${payload.sender_id}`);
+  const eventBuf = Buffer.from(payload.encoded_event, 'base64');
+
+  const contents = extractContentsFromMessageEvent(eventBuf);
+  if (!contents) throw new Error('could not extract contents from MessageEvent');
+
+  // Decrypt with secretbox
+  const plaintext = await secretboxDecrypt(contents, convKey);
+
+  // Decode thrift MessageEntryHolder
+  const decoded = decodeMessageEntryHolder(plaintext);
+  const text = decoded?.message?.text;
+  const attachments = decoded?.message?.attachments;
+
+  log.info('webhook', `[xchat-decrypt] decrypted message: "${text?.slice(0, 50)}${text && text.length > 50 ? '...' : ''}"${attachments?.length ? ` + ${attachments.length} attachment(s)` : ''}`);
+
+  return {
+    sender_id: payload.sender_id,
+    conversation_id: conversationId,
+    text,
+    entities: decoded?.message?.entities,
+    attachments: attachments?.map(a => ({
+      media_hash_key: a.media_hash_key,
+      type: a.type === 1 ? 'image' : a.type === 2 ? 'gif' : a.type === 3 ? 'video' : a.type === 4 ? 'audio' : a.type === 5 ? 'file' : a.type === 6 ? 'svg' : a.url ? 'url' : `unknown(${a.type})`,
+      filename: a.filename,
+      url: a.url,
+      display_url: a.display_url,
+      width: a.width,
+      height: a.height,
+      filesize_bytes: a.filesize_bytes,
+    })),
+    decrypted_at: new Date().toISOString(),
+  };
+}
+
+/** Extract our encrypted_conversation_key from a key_change_event */
+function getOurEncryptedKey(keyChangeEventB64: string, userId: string): string {
+  const buf = Buffer.from(keyChangeEventB64, 'base64');
+  let searchPos = 0;
+  while (true) {
+    const idx = buf.indexOf(userId, searchPos);
+    if (idx === -1) break;
+    // Verify it's a proper thrift string (preceded by 4-byte length matching userId length)
+    if (idx >= 4 && buf.readInt32BE(idx - 4) === userId.length) {
+      const pos = idx + userId.length;
+      // Next field should be type=11 (string), id=2 (encrypted_conversation_key)
+      if (pos < buf.length - 7 && buf[pos] === 11 && buf.readInt16BE(pos + 1) === 2) {
+        const len = buf.readInt32BE(pos + 3);
+        return buf.subarray(pos + 7, pos + 7 + len).toString('utf8');
+      }
+    }
+    searchPos = idx + 1;
+  }
+  return '';
+}
+
+/** Extract conversation key from a key_change_event using our decrypt key */
+function extractConversationKey(keyChangeEventB64: string, userId: string, decryptKeyB64: string, unwrapFn: Function): Buffer | null {
+  const encKey = getOurEncryptedKey(keyChangeEventB64, userId);
+  if (!encKey) return null;
+  return unwrapFn(encKey, decryptKeyB64);
+}
+
+

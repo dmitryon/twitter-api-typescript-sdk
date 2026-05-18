@@ -1,6 +1,6 @@
 # X Chat Feature — Requirements, Design & Tasks
 
-> Reference: [XChat Migration Guide](./XCHAT-MIGRATION-GUIDE.md) | [XChat PDF](../XChat_Beta_Enterprise_User_Migration_Guide_v1.pdf)
+> Reference: [XChat Migration Guide](XCHAT-MIGRATION-GUIDE.md) | [XChat PDF](../../XChat_Beta_Enterprise_User_Migration_Guide_v1.pdf)
 
 ## Requirements
 
@@ -33,37 +33,45 @@
 
 ### Encryption Stack
 
-Deduced from xchat-bot-python, xchat-bot-go, OpenAPI spec, and chat-xdk API surface.
+Verified against the Go reference implementation at `/Users/dcherkas/projects/opensource/twitter` (mautrix-twitter), specifically `pkg/twittermeow/crypto/` and `pkg/juiceboxgo/`.
 
 | Layer | Detail |
 |-------|--------|
-| Key agreement | X25519 (Curve25519) — `public_key` field |
-| Signing | Ed25519 — `signing_public_key` field |
-| Key custody | Juicebox (PIN-based threshold secret sharing across realms) |
-| Conversation key | 32-byte AES-256 symmetric, wrapped per-participant via ECIES (X25519 + HKDF + AES-GCM) |
-| Message encryption | AES-256-GCM with decrypted conversation key |
-| Wire format | Apache Thrift `MessageCreateEvent` struct → binary → base64 (serialization only, not encryption) |
-| Message signing | Ed25519 → Thrift `MessageEventSignature` → base64 |
-| KeyChange events | Decryptable with empty key; iterate `participant_keys` until one decrypts |
+| Key types | Two separate **P-256 ECDSA** keys per user: `SigningKey` (sign messages) + `DecryptKey` (unwrap conversation keys). Both stored as base64-encoded 32-byte raw private scalars |
+| Key custody | Juicebox — PIN-based threshold secret sharing (OPRF protocol). Full Go implementation in `pkg/juiceboxgo/`. Not yet implemented in TypeScript |
+| Conversation key wrapping | **P-256 ECDH + KDF2-SHA256 + AES-128-GCM**. Blob: `ephPub(65 uncompressed) \| AES-GCM(ct+tag)`. KDF: `SHA256(shared \| counter_BE32 \| ephPub)` → first 16 = AES key, last 16 = IV. Result is a 32-byte secretbox key |
+| Message encryption | **XSalsa20-Poly1305 (libsodium secretbox)**. Layout: `nonce(24) \| ciphertext+mac`. Key: decrypted 32-byte conversation key |
+| Plaintext wire format | `MessageEntryHolder { contents: MessageEntryContents { message: MessageContents { text } } }` → Thrift binary → secretbox encrypted → `MessageCreateEvent.contents` (bytes field, thrift id 100) → Thrift binary → base64 → `encoded_message_create_event` |
+| Message signing | **ECDSA P-256 SHA-256**. Preimage: `"MessageCreateEvent,{msg_id},{sender_id},{conv_id},{key_version},{base64_nopad(contents_bytes)}"`. Signature: raw `r(32)\|\|s(32)` → base64 with padding. `MessageEventSignature` thrift → base64 → `encoded_message_event_signature`. Signature version: `"3"` |
+| Conversation token | Server-provided opaque token per conversation, extracted from incoming `MessageEvent.conversation_token`. Required for sending. Stored in `ConversationKeyStorage` |
 
-The `encrypted_conversation_key` in each event payload is the AES-256 conversation key wrapped with the recipient's X25519 public key. The chat-xdk decrypts it using the private key retrieved from Juicebox via PIN.
-
----
-
-## Design
+**Previously incorrect assumptions** (from xchat-bot-python/Go API surface only):
+- ~~X25519 + Ed25519~~ → actually P-256 ECDSA (two separate keys)
+- ~~AES-256-GCM message encryption~~ → actually XSalsa20-Poly1305 secretbox
+- ~~X25519 + HKDF + AES-256-GCM key wrapping~~ → actually P-256 ECDH + KDF2-SHA256 + AES-128-GCM
+- ~~Flat MessageCreateEvent thrift~~ → actually nested MessageEntryHolder wrapper
 
 ### Key Storage Model
 
 ```
-Integration.xchat {
-  pin: string                          // 4-digit, set by user in X app
-  private_key?: string                 // cached from Juicebox (expensive to retrieve)
-  public_key_version?: string          // to detect key rotation
-  conversation_keys?: Record<id, key>  // decrypted symmetric keys per conversation
-}
+data/user-xchat/{userId}.json
+  pin: string                    // 4-digit, set by user in X app
+  private_key?: string           // NOT USED — replaced by signingKeyB64 + decryptKeyB64
+  signing_key_version?: string   // key version from GET /2/users/{id}/public_keys
+
+data/user-public-keys/{userId}.json
+  public_key: string             // P-256 public key (SPKI base64) — for encrypting conv keys to this user
+  signing_public_key: string     // P-256 signing public key (SPKI base64) — for verifying signatures
+  version: string                // key version
+  juicebox_config: object        // Juicebox realm config for PIN-based key recovery
+
+data/conversation-keys/{conversationId}.json
+  encrypted_conversation_key: string  // wrapped 32-byte secretbox key (from KeyChange event)
+  key_version: string
+  conversation_token?: string         // server-provided token required for sending
 ```
 
-Private key and conversation keys are never returned in API responses — only `has_pin`, `has_private_key`, `conversation_key_count` are exposed.
+No xchat data is stored on the integration. All xchat data is user-scoped or conversation-scoped.
 
 ### Similarities: Legacy DM vs X Chat
 
@@ -195,15 +203,16 @@ alt PIN not set
   UI -> User: Show error
 else PIN set
   note over BE
-    TODO (requires chat-xdk in TypeScript):
-    1. unlock(pin, juiceboxConfig) → private key (X25519 + Ed25519)
-    2. decrypt_conversation_key(encKey) → AES-256 conversation key
-    3. Thrift serialize MessageCreateEvent
-    4. AES-256-GCM encrypt with conversation key
-    5. base64 → encoded_message_create_event
-    6. Ed25519 sign → encoded_message_event_signature
+    Encryption flow (implemented in chat-crypto.ts):
+    1. Encode: MessageEntryHolder { MessageEntryContents { MessageContents { text } } } → Thrift binary
+    2. Decrypt conversation key: P-256 ECDH + KDF2-SHA256 + AES-128-GCM (UnwrapConversationKey)
+    3. Encrypt: secretbox(plaintext, convKey) → contentsBytes (nonce||ciphertext)
+    4. Encode: MessageCreateEvent { contents: contentsBytes, key_version, ... } → Thrift binary → base64
+    5. Sign: ECDSA-P256-SHA256("MessageCreateEvent,{msg_id},{sender_id},{conv_id},{key_version},{base64_nopad(contents)}")
+    6. Encode: MessageEventSignature { sig, key_version, sig_version:"3", spki } → Thrift binary → base64
     ---
-    Current stub: base64(JSON({ text, media_hash_key }))
+    Blocked on: Juicebox unlock (TypeScript not implemented)
+    Keys can be pre-loaded via PATCH /xchat/settings after unlocking with Python/Go bot
   end note
   BE -> BE: Build encoded_message_create_event (stub)\nGenerate message_id (UUID)
   BE -> X: POST /2/chat/conversations/:id/messages\n{ encoded_message_create_event, message_id }
@@ -318,4 +327,100 @@ Browser -> User: 🔐 chat.received [encrypted payload]\nin 📨 Events modal
 | 6 | Media attachment flow (upload + download) | ✅ Done |
 | 7 | XAA backend handlers (`xaa-handlers.ts`) | ✅ Done |
 | 8 | XAA frontend (subscription management + event display) | ✅ Done |
-| — | PIN management + key caching on integration | ✅ Done |
+| 9 | PIN management + key unlock flow | ✅ Done |
+| 10 | Separate user/conversation key storage from integration | ✅ Done |
+| 11 | Correct encryption stack (P-256, secretbox, KDF2) | ✅ Done |
+| — | Juicebox unlock in TypeScript | ❌ Blocked — requires OPRF protocol port from `pkg/juiceboxgo/` |
+| — | `tweetnacl` dependency for secretbox | ⚠️ Needs `npm install tweetnacl` in oauth-demo |
+
+---
+
+## Juicebox TypeScript Port
+
+### Crypto Primitives Required
+
+| Primitive | Used In | Purpose | TypeScript Library |
+|-----------|---------|---------|-------------------|
+| **Ristretto255** (scalar/point arithmetic) | OPRF, Shamir secret sharing | Blinding, evaluation, Lagrange interpolation | `@noble/curves` (ristretto255 via ed25519 module) |
+| **Argon2id** | PIN hashing | Derive `access_key` (32B) + `encryption_key_seed` (32B) from PIN | `hash-wasm` or `@noble/hashes/argon2` |
+| **SHA-512** | OPRF finalization, unlock key derivation | Hash OPRF output to 64 bytes | Node.js `crypto` built-in |
+| **Blake2s-256** | Noise protocol, encryption key derivation | MAC for key derivation, Noise hash function | `@noble/hashes` (blake2s) |
+| **Blake2s-128** (keyed MAC) | Unlock key tag, secret commitment | Realm-specific tags and commitments | `@noble/hashes` (blake2s) |
+| **ChaCha20-Poly1305** | Noise transport, secret encryption | Noise cipher, decrypt recovered secret | `@noble/ciphers` (chacha20poly1305) |
+| **X25519** | Noise NK handshake | Ephemeral DH with realm static key | `@noble/curves` (x25519) |
+| **Ed25519** | OPRF signature verification | Verify realm's OPRF public key signature | `@noble/curves` (ed25519) |
+| **HKDF-Blake2s** | Noise key derivation | `mix_key` and `split` operations | `@noble/hashes` (hkdf + blake2s) |
+| **CBOR** | Realm request/response serialization | Encode/decode Juicebox protocol messages | `cbor-x` or `cborg` |
+
+### Protocol Overview
+
+The Juicebox recovery protocol has 3 phases, each involving parallel requests to multiple realms:
+
+```
+Phase 1: Query version
+  → Each realm returns its stored RegistrationVersion
+  → Client picks version with threshold agreement
+
+Phase 2: OPRF evaluation
+  → Client: hash PIN with Argon2id → access_key
+  → Client: blind access_key with random scalar → blinded_input
+  → Each realm: evaluate OPRF on blinded_input → blinded_result_share + DLEQ proof
+  → Client: verify DLEQ proofs, combine shares via Lagrange interpolation
+  → Client: finalize OPRF → derive unlock_key, verify commitment
+
+Phase 3: Retrieve encrypted secret
+  → Client: derive unlock_key_tag per realm
+  → Each realm: verify tag, return encrypted_secret + encryption_key_scalar_share
+  → Client: combine scalar shares via Lagrange interpolation
+  → Client: derive encryption_key from seed + combined scalar
+  → Client: decrypt secret with ChaCha20-Poly1305
+```
+
+The recovered secret is the raw P-256 private key material (signing + decrypt keys).
+
+### Implementation Plan
+
+| # | Task | Files | Est. Lines | Dependencies |
+|---|------|-------|-----------|-------------|
+| 1 | **PIN hashing** — Argon2id with salt construction | `juicebox/pin.ts` | ~40 | `hash-wasm` |
+| 2 | **OPRF** — Start (blind), Finalize (unblind), DLEQ verify | `juicebox/oprf.ts` | ~100 | `@noble/curves` (ristretto255) |
+| 3 | **Shamir secret sharing** — Lagrange interpolation for scalars and points | `juicebox/shamir.ts` | ~80 | `@noble/curves` (ristretto255) |
+| 4 | **Crypto utilities** — DeriveUnlockKey, DeriveEncryptionKey, DecryptSecret, tags/commitments | `juicebox/crypto.ts` | ~80 | `@noble/hashes` (blake2s), `@noble/ciphers` (chacha20) |
+| 5 | **Noise NK handshake** — Start, Finish, Transport encrypt/decrypt | `juicebox/noise.ts` | ~120 | `@noble/curves` (x25519), `@noble/hashes` (blake2s, hkdf), `@noble/ciphers` (chacha20) |
+| 6 | **Realm client** — HTTP communication (software + hardware realms), CBOR serialization | `juicebox/realm.ts` | ~150 | `cbor-x`, noise.ts |
+| 7 | **Configuration** — Parse and validate Juicebox config from public_keys response | `juicebox/config.ts` | ~60 | — |
+| 8 | **Client** — Orchestrate 3-phase recovery with parallel realm requests | `juicebox/client.ts` | ~200 | All above |
+| 9 | **Integration** — Wire into `unlockKeys` handler, store recovered keys | `handlers/xchat-handlers.ts` | ~30 | client.ts |
+
+**Total estimated: ~860 lines of TypeScript**
+
+### Dependencies to Install
+
+```bash
+cd oauth-demo
+npm install @noble/curves @noble/hashes @noble/ciphers hash-wasm cbor-x
+```
+
+(`@noble/curves` and `@noble/hashes` may already be installed from the previous chat-crypto.ts)
+
+
+## File/Directory Layout
+
+All X Chat code lives in `oauth-demo/` (not a dedicated `xchat/` subdirectory):
+
+| File | Purpose |
+|------|---------|
+| `chat-crypto.ts` | Encryption, key wrapping, secretbox, ECDSA signing, `encryptMessage()` |
+| `chat-thrift.ts` | Thrift encode/decode wrappers using generic codec + schemas |
+| `thrift-codec.ts` | Generic Thrift binary protocol encoder/decoder |
+| `thrift-models.ts` | Auto-generated 106 schema definitions from Go structs |
+| `xchat-utils.ts` | Conversation ID normalization (`toCanonicalConvId`, `toApiConvId`, `extractRecipientId`) |
+| `handlers/xchat-handlers.ts` | All X Chat REST handlers (conversations, messages, send, settings, unlock) |
+| `handlers/webhook-handlers.ts` | Webhook ingestion + automatic xchat decryption |
+| `juicebox/` | Full Juicebox OPRF threshold recovery port (8 files) |
+| `public/xchat.js` | Frontend X Chat modal UI |
+| `data/user-xchat/` | Per-user PIN + private keys |
+| `data/user-public-keys/` | Cached public keys + juicebox config |
+| `data/conversation-keys/` | Cached wrapped conversation keys |
+| `xchat/XCHAT-NOTES.md` | Pitfalls, gotchas, undocumented behaviors |
+| `xchat/XCHAT-FEATURE.md` | This document — requirements, design, tasks |

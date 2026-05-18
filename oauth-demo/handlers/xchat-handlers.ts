@@ -1,8 +1,26 @@
 import { Request, Response } from "express";
-import { resolveAuth, mediaCache, sseResponse, integrationStorage } from "./handler-utils";
+import { resolveAuth, mediaCache, sseResponse, integrationStorage, accessTokenStorage } from "./handler-utils";
+import { rest } from "twitter-api-sdk";
+import { UserPublicKeyStorage, ConversationKeyStorage, UserXChatStorage } from "../storage";
 import { log } from "../logger";
-import { Chat } from "../chat-crypto";
+import { toCanonicalConvId, toApiConvId, extractRecipientId } from "../xchat/xchat-utils";
 import crypto from "crypto";
+
+const userPublicKeyStorage = new UserPublicKeyStorage();
+const conversationKeyStorage = new ConversationKeyStorage();
+const userXChatStorage = new UserXChatStorage();
+
+// Ensure storage directories exist
+Promise.all([userPublicKeyStorage.init(), conversationKeyStorage.init(), userXChatStorage.init()]).catch(() => {});
+
+/** Resolve the OAuth2 user ID for an integration. */
+async function resolveUserId(integrationId: string): Promise<string | null> {
+  const integration = await integrationStorage.load(integrationId);
+  const accessTokenId = integration?.oauth2?.accessTokenId;
+  if (!accessTokenId) return null;
+  const entry = await accessTokenStorage.load(accessTokenId);
+  return entry?.user?.id ?? null;
+}
 
 export const getXChatConversations = async (req: Request, res: Response) => {
   try {
@@ -22,16 +40,15 @@ export const getXChatConversations = async (req: Request, res: Response) => {
     log.debug('xchat', `Fetched conversations for integration ${id} (${response.data?.length || 0})`);
     res.json(response);
   } catch (error: any) {
-    log.error('xchat', `getXChatConversations failed:`, error.error || error.message || error);
-    const status = error.status || 500;
-    res.status(status).json({ error: error.error || error.message || "Unknown error" });
+    log.error('xchat', `getXChatConversations failed:`, error.message || error);
+    res.status(error.status || 500).json({ error: error.message || "Unknown error" });
   }
 };
 
 export const getXChatMessages = async (req: Request, res: Response) => {
   try {
     const { id, conversationId } = req.params;
-    const { auth: authType, pagination_token } = req.query;
+    const { auth: authType } = req.query;
 
     const resolved = await resolveAuth(id, authType as string);
     if (!resolved) {
@@ -39,27 +56,52 @@ export const getXChatMessages = async (req: Request, res: Response) => {
       return;
     }
 
-    // GET /2/chat/conversations/{id} is not in the OpenAPI spec and therefore
-    // not generated on the Client. Calling directly via auth client.
-    const params: Record<string, string> = {};
-    if (pagination_token) params.pagination_token = pagination_token as string;
+    // Load messages from webhook data (no REST API for message history)
+    const canonicalId = toCanonicalConvId(conversationId);
+    const apiConvId = toApiConvId(conversationId);
+    log.debug('xchat', `getXChatMessages: loading from webhooks for ${canonicalId}`);
 
-    const url = `https://api.x.com/2/chat/conversations/${conversationId}?${new URLSearchParams(params)}`;
-    const headers = await resolved.authClient.getAuthHeader({ url, method: 'GET' });
-    const response = await fetch(url, { headers: headers as any });
-    const data = await response.json();
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const { __dirname } = await import('../esm-utils.js');
+    const webhookDir = path.default.join(__dirname(import.meta.url), '../data/webhooks');
 
-    if (!response.ok) {
-      res.status(response.status).json(data);
-      return;
-    }
+    let messages: any[] = [];
+    try {
+      const files = await fs.default.readdir(webhookDir);
+      const webhookFiles = files.filter(f => f.endsWith('.json')).sort();
 
-    log.debug('xchat', `Fetched messages for conversation ${conversationId}`);
-    res.json(data);
+      for (const file of webhookFiles) {
+        try {
+          const data = JSON.parse(await fs.default.readFile(path.default.join(webhookDir, file), 'utf8'));
+          const payload = data.body?.data?.payload;
+          if (!payload?.conversation_id) continue;
+          if (payload.conversation_id !== canonicalId && payload.conversation_id !== apiConvId) continue;
+          if (data.body?.data?.event_type !== 'chat.received' && data.body?.data?.event_type !== 'chat.sent') continue;
+
+          messages.push({
+            id: payload.id,
+            sender_id: payload.sender_id,
+            conversation_id: payload.conversation_id,
+            created_at: payload.created_at_msec ? new Date(parseInt(payload.created_at_msec)).toISOString() : data.timestamp,
+            text: data.decrypted?.text || null,
+            entities: data.decrypted?.entities || null,
+            attachments: data.decrypted?.attachments || null,
+            encrypted: !data.decrypted,
+            source: 'webhook',
+          });
+        } catch { /* skip malformed files */ }
+      }
+    } catch { /* webhook dir might not exist */ }
+
+    messages.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+    log.debug('xchat', `getXChatMessages: found ${messages.length} messages from webhooks`);
+    res.json({ data: messages, meta: { source: 'webhooks', result_count: messages.length } });
   } catch (error: any) {
-    log.error('xchat', `getXChatMessages failed:`, error.error || error.message || error);
+    log.error('xchat', `getXChatMessages failed:`, error.message || error);
     const status = error.status || 500;
-    res.status(status).json({ error: error.error || error.message || "Unknown error" });
+    const message = error.message?.includes('<!DOCTYPE') ? `${status} Error` : error.message || 'Unknown error';
+    res.status(status).json({ error: message });
   }
 };
 
@@ -75,58 +117,124 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
       return;
     }
 
-    // Load xchat settings to get PIN and cached private key.
-    // The real encryption flow (when chat-xdk becomes available in TS) is:
-    //   1. If private_key not cached: use PIN + public_keys to retrieve from Juicebox via XDK
-    //   2. Use private_key to decrypt the conversation key
-    //   3. Use conversation key to encrypt the message via XDK
-    //   4. Serialize as Thrift MessageCreateEvent, base64-encode → encoded_message_create_event
-    // For now: best-effort base64-encoded JSON as a stub to exercise the API endpoint.
-    const integration = await integrationStorage.load(id);
-    const xchat = integration?.xchat;
+    const userId = await resolveUserId(id);
+    if (!userId) {
+      res.status(400).json({ error: "Could not resolve user ID for integration" });
+      return;
+    }
 
+    const xchat = await userXChatStorage.load(userId);
     if (!xchat?.pin) {
       res.status(400).json({ error: "X Chat PIN not set. Please configure your PIN first." });
       return;
     }
 
     const message_id = crypto.randomUUID();
-    const apiConvId = conversationId.replace(/:/g, '-');
+    const apiConvId = toApiConvId(conversationId);
     let encoded_message_create_event: string;
     let encoded_message_event_signature: string | undefined;
 
-    if (xchat.private_key && (xchat.conversation_keys?.[conversationId] || req.body.encrypted_conversation_key)) {
-      const encryptedConvKey = xchat.conversation_keys?.[conversationId] ?? req.body.encrypted_conversation_key;
-      const chat = new Chat();
-      chat.importKeys(JSON.stringify({
-        x25519: xchat.private_key,
-        ed25519: xchat.private_key,
-        ed25519_pub: xchat.public_key_version ?? '',
-      }));
+    log.debug('xchat', `[send] step 1: checking conversation key for ${conversationId}`);
+    const convKeyId = toCanonicalConvId(conversationId);
+    const convKeyEntry = await conversationKeyStorage.load(convKeyId);
+    const encryptedConvKey = convKeyEntry?.encrypted_conversation_key ?? req.body.encrypted_conversation_key;
+
+    if (xchat.private_key && encryptedConvKey) {
+      log.debug('xchat', `[send] step 2: using cached conversation key (version=${convKeyEntry?.key_version})`);
+      const { encryptMessage } = await import('../xchat/chat-crypto');
       try {
-        const payload = chat.encryptMessageForApi(
-          message_id,
-          id,
-          conversationId,
+        const payload = await encryptMessage(
+          xchat.private_key,
           encryptedConvKey,
           text,
-          key_version ?? '1',
+          message_id,
+          userId,
+          convKeyId,
+          key_version ?? convKeyEntry?.key_version ?? '1',
           xchat.signing_key_version ?? '1',
         );
         encoded_message_create_event = payload.encrypted_content;
         encoded_message_event_signature = payload.encoded_event_signature;
-        log.info('xchat', `Encrypted message for ${conversationId} (X25519+AES-256-GCM+Ed25519)`);
+        log.debug('xchat', `[send] step 3: message encrypted (secretbox + ECDSA signed)`);
       } catch (encErr: any) {
-        log.warn('xchat', `Encryption failed (${encErr.message}), falling back to stub`);
-        encoded_message_create_event = Buffer.from(JSON.stringify({ text, stub: true })).toString('base64');
-        encoded_message_event_signature = undefined;
+        log.error('xchat', `[send] encryption failed: ${encErr.message}`);
+        res.status(500).json({ error: `Encryption failed: ${encErr.message}` });
+        return;
+      }
+    } else if (xchat.private_key && !encryptedConvKey) {
+      log.info('xchat', `[send] step 2: no conversation key found, initializing new conversation`);
+      try {
+        const { wrapConversationKey, getPublicKeyFromScalar, spkiToRawPublicKey } = await import('../xchat/chat-crypto');
+        const keys = JSON.parse(xchat.private_key!);
+
+        // Generate a new 32-byte conversation key
+        const convKey = crypto.randomBytes(32);
+        const keyVersion = String(Date.now());
+        log.debug('xchat', `[send] step 2a: generated conversation key (version=${keyVersion})`);
+
+        // Get own public key from our decrypt key scalar
+        const ownPubKeyB64 = getPublicKeyFromScalar(keys.decryptKeyB64);
+        log.debug('xchat', `[send] step 2b: derived own public key from decrypt scalar`);
+
+        // Get recipient's public key
+        const recipientId = extractRecipientId(conversationId, userId);
+        log.debug('xchat', `[send] step 2c: fetching recipient public key for ${recipientId}`);
+        const recipientPkResp = await resolved.client.users.getUsersPublicKey(recipientId) as any;
+        const recipientEntry = Array.isArray(recipientPkResp?.data) ? recipientPkResp.data[recipientPkResp.data.length - 1] : recipientPkResp?.data;
+        if (!recipientEntry?.public_key) {
+          res.status(400).json({ error: "Could not fetch recipient's public key" });
+          return;
+        }
+        log.debug('xchat', `[send] step 2c: got recipient public key (version=${recipientEntry.version})`);
+
+        // Wrap conversation key for both participants
+        const ownWrapped = wrapConversationKey(convKey, ownPubKeyB64);
+        const recipientRawPubKey = spkiToRawPublicKey(recipientEntry.public_key);
+        const recipientWrapped = wrapConversationKey(convKey, recipientRawPubKey);
+        log.debug('xchat', `[send] step 2d: wrapped conversation key for both participants`);
+
+        // Initialize conversation keys via API
+        log.debug('xchat', `[send] step 2e: calling initializeChatConversationKeys for ${recipientId}`);
+        try {
+          await resolved.client.chat.initializeChatConversationKeys(recipientId, {
+            conversation_key_version: keyVersion,
+            conversation_participant_keys: [
+              { user_id: userId, encrypted_conversation_key: ownWrapped, public_key_version: keys.keyVersion },
+              { user_id: recipientId, encrypted_conversation_key: recipientWrapped, public_key_version: recipientEntry.version },
+            ],
+          });
+          log.info('xchat', `[send] step 2e: conversation keys initialized successfully`);
+        } catch (keyInitErr: any) {
+          log.warn('xchat', `[send] step 2e: key initialization endpoint failed (${keyInitErr.status || 'unknown'}), proceeding without it`);
+        }
+
+        // Cache the wrapped key for future use
+        await conversationKeyStorage.save({
+          id: convKeyId,
+          encrypted_conversation_key: ownWrapped,
+          key_version: keyVersion,
+          cached_at: new Date().toISOString(),
+        });
+        log.debug('xchat', `[send] step 2f: conversation key cached`);
+
+        // Encrypt the message with the new key
+        const { encryptMessage } = await import('../xchat/chat-crypto');
+        const payload = await encryptMessage(
+          xchat.private_key!, ownWrapped, text,
+          message_id, userId, convKeyId,
+          keyVersion, keys.keyVersion,
+        );
+        encoded_message_create_event = payload.encrypted_content;
+        encoded_message_event_signature = payload.encoded_event_signature;
+        log.debug('xchat', `[send] step 3: message encrypted with new conversation key`);
+      } catch (initErr: any) {
+        log.error('xchat', `[send] key initialization failed: ${initErr.message}`);
+        res.status(500).json({ error: `Key initialization failed: ${initErr.message}` });
+        return;
       }
     } else {
-      log.info('xchat', `Sending stub — private_key: ${!!xchat.private_key}, conv_key: ${!!xchat.conversation_keys?.[conversationId]}`);
-      const messagePayload: any = { text, pin_used: true, private_key_cached: !!xchat.private_key };
-      if (media_hash_key) messagePayload.media = { media_hash_key };
-      encoded_message_create_event = Buffer.from(JSON.stringify(messagePayload)).toString('base64');
-      encoded_message_event_signature = undefined;
+      res.status(400).json({ error: "Private key not available. Please unlock keys first." });
+      return;
     }
 
     const response = await resolved.client.chat.sendChatMessage(apiConvId, {
@@ -139,9 +247,8 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
     log.info('xchat', `Sent message to conversation ${conversationId} (message_id=${message_id})`);
     res.json(response);
   } catch (error: any) {
-    log.error('xchat', `sendXChatMessage failed:`, error.error || error.message || error);
-    const status = error.status || 500;
-    res.status(status).json({ error: error.error || error.message || "Unknown error" });
+    log.error('xchat', `sendXChatMessage failed:`, error.message || error);
+    res.status(error.status || 500).json({ error: error.message || "Unknown error" });
   }
 };
 
@@ -156,13 +263,25 @@ export const getUserPublicKeys = async (req: Request, res: Response) => {
       return;
     }
 
-    const response = await resolved.client.users.getUsersPublicKey(userId);
+    const response = await resolved.client.users.getUsersPublicKey(userId) as any;
     log.debug('xchat', `Fetched public keys for user ${userId}`);
+
+    const keyEntry = Array.isArray(response?.data) ? response.data[response.data.length - 1] : response?.data;
+    if (keyEntry) {
+      await userPublicKeyStorage.save({
+        id: userId,
+        public_key: keyEntry.public_key,
+        signing_public_key: keyEntry.signing_public_key,
+        version: keyEntry.version,
+        juicebox_config: keyEntry.juicebox_config ?? keyEntry.token_map,
+        cached_at: new Date().toISOString(),
+      });
+    }
+
     res.json(response);
   } catch (error: any) {
-    log.error('xchat', `getUserPublicKeys failed:`, error.error || error.message || error);
-    const status = error.status || 500;
-    res.status(status).json({ error: error.error || error.message || "Unknown error" });
+    log.error('xchat', `getUserPublicKeys failed:`, error.message || error);
+    res.status(error.status || 500).json({ error: error.message || "Unknown error" });
   }
 };
 
@@ -277,20 +396,19 @@ export const proxyXChatMedia = async (req: Request, res: Response) => {
     res.set('Content-Type', contentType);
     res.send(buffer);
   } catch (error: any) {
-    log.error('xchat', `Media proxy failed:`, error.error || error.message || error);
-    const status = error.status || 500;
-    res.status(status).json({ error: error.error || error.message || "Unknown error" });
+    log.error('xchat', `Media proxy failed:`, error.message || error);
+    res.status(error.status || 500).json({ error: error.message || "Unknown error" });
   }
 };
 
 export const updateXChatSettings = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { pin, private_key, public_key_version, signing_key_version, conversation_key } = req.body;
+    const { pin, private_key, signing_key_version, conversation_key } = req.body;
 
-    const integration = await integrationStorage.load(id);
-    if (!integration) {
-      res.status(404).json({ error: "Integration not found" });
+    const userId = await resolveUserId(id);
+    if (!userId) {
+      res.status(400).json({ error: "Could not resolve user ID — ensure OAuth2 is connected" });
       return;
     }
 
@@ -299,30 +417,28 @@ export const updateXChatSettings = async (req: Request, res: Response) => {
         res.status(400).json({ error: "PIN must be exactly 4 digits" });
         return;
       }
-      integration.xchat = { ...integration.xchat, pin };
+      const existing = await userXChatStorage.load(userId) ?? { id: userId, pin };
+      await userXChatStorage.save({ ...existing, pin });
     }
 
     if (private_key !== undefined) {
-      integration.xchat = { ...integration.xchat!, private_key, public_key_version, signing_key_version };
+      const existing = await userXChatStorage.load(userId) ?? { id: userId, pin: '' };
+      await userXChatStorage.save({ ...existing, private_key, signing_key_version });
     }
 
-    // Store a single conversation key: { conversation_id, key }
     if (conversation_key) {
-      const { conversation_id, key } = conversation_key;
-      integration.xchat = {
-        ...integration.xchat!,
-        conversation_keys: {
-          ...(integration.xchat?.conversation_keys || {}),
-          [conversation_id]: key,
-        },
-      };
+      const { conversation_id, key, key_version } = conversation_key;
+      await conversationKeyStorage.save({
+        id: conversation_id,
+        encrypted_conversation_key: key,
+        key_version,
+        cached_at: new Date().toISOString(),
+      });
     }
 
-    await integrationStorage.save(integration);
-    log.info('xchat', `Updated xchat settings for integration ${id}`);
-    // Never return the private key or PIN in the response
-    const { private_key: _pk, pin: _pin, ...safeXchat } = integration.xchat || {} as any;
-    res.json({ success: true, xchat: { ...safeXchat, has_pin: !!integration.xchat?.pin, has_private_key: !!integration.xchat?.private_key } });
+    log.info('xchat', `Updated xchat settings for user ${userId} (integration ${id})`);
+    const xchat = await userXChatStorage.load(userId);
+    res.json({ success: true, xchat: { has_pin: !!xchat?.pin, has_private_key: !!xchat?.private_key } });
   } catch (error: any) {
     log.error('xchat', `updateXChatSettings failed:`, error.message || error);
     res.status(500).json({ error: error.message || "Unknown error" });
@@ -332,27 +448,116 @@ export const updateXChatSettings = async (req: Request, res: Response) => {
 export const getXChatSettings = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const integration = await integrationStorage.load(id);
-    if (!integration) {
-      res.status(404).json({ error: "Integration not found" });
-      return;
-    }
-    const xchat = integration.xchat;
-    if (!xchat) {
+
+    const userId = await resolveUserId(id);
+    if (!userId) {
       res.json({ xchat: null });
       return;
     }
-    // Never expose PIN or private key — only report presence
-    const { private_key: _pk, pin: _pin, conversation_keys, public_key_version } = xchat;
+
+    const xchat = await userXChatStorage.load(userId);
     res.json({
-      xchat: {
-        has_pin: !!_pin,
-        has_private_key: !!_pk,
-        public_key_version,
-        conversation_key_count: Object.keys(conversation_keys || {}).length,
-      }
+      xchat: xchat
+        ? { has_pin: !!xchat.pin, has_private_key: !!xchat.private_key, user_id: userId }
+        : { user_id: userId },
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || "Unknown error" });
+  }
+};
+
+export const unlockKeys = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { auth: authType } = req.query;
+
+    const resolved = await resolveAuth(id, authType as string);
+    if (!resolved) {
+      res.status(400).json({ error: "Integration not found or invalid auth" });
+      return;
+    }
+
+    // Step 1: resolve user ID
+    const userId = await resolveUserId(id);
+    if (!userId) {
+      res.status(400).json({ error: "Could not resolve user ID — ensure OAuth2 is connected" });
+      return;
+    }
+
+    const xchat = await userXChatStorage.load(userId);
+    if (!xchat?.pin) {
+      res.status(400).json({ error: "PIN not set" });
+      return;
+    }
+    log.debug('xchat', `[unlock] step 1: resolved user_id=${userId}`);
+
+    // Step 2: always fetch fresh public keys (tokens in juicebox_config expire)
+    log.debug('xchat', `[unlock] step 2: fetching public keys from API for user ${userId}`);
+    const pkData = await rest({
+      auth: resolved.authClient,
+      endpoint: `/2/users/${userId}/public_keys`,
+      params: { 'public_key.fields': 'version,public_key,signing_public_key,juicebox_config' },
+      method: 'GET',
+    }) as any;
+    const raw = Array.isArray(pkData?.data) ? pkData.data[pkData.data.length - 1] : pkData?.data;
+    if (!raw) {
+      res.status(500).json({ error: "No public key data returned" });
+      return;
+    }
+    const keyEntry = {
+      id: userId,
+      public_key: raw.public_key,
+      signing_public_key: raw.signing_public_key,
+      version: raw.version,
+      juicebox_config: raw.juicebox_config ?? raw.token_map,
+      cached_at: new Date().toISOString(),
+    };
+    await userPublicKeyStorage.save(keyEntry);
+    log.debug('xchat', `[unlock] step 2: public keys fetched (version=${keyEntry.version})`);
+    if (!keyEntry) {
+      res.status(500).json({ error: "No public key data returned" });
+      return;
+    }
+    const signingKeyVersion = String(keyEntry.version ?? '');
+    log.debug('xchat', `[unlock] step 2: signing_key_version=${signingKeyVersion}`);
+
+    // Step 3: attempt Juicebox unlock
+    log.info('xchat', `[unlock] step 3: starting Juicebox recovery`);
+    const { recover } = await import('../xchat/juicebox/client.js');
+    try {
+      // Build config JSON in the format recover() expects
+      const jb = keyEntry.juicebox_config as any;
+      const tokens: Record<string, string> = {};
+      if (jb.token_map && Array.isArray(jb.token_map)) {
+        for (const t of jb.token_map) tokens[t.key] = t.value?.token ?? t.value;
+      }
+      const configJson = JSON.stringify({ sdk_config: jb.key_store_token_map_json, tokens, max_guess_count: jb.max_guess_count });
+
+      const secret = await recover(xchat.pin, configJson, userId);
+      // The recovered secret contains the raw P-256 key material
+      // Format: decrypt_key(32) || signing_key(32) (per Go's splitRawRecoveredSecret)
+      const decryptKeyB64 = Buffer.from(secret.slice(0, 32)).toString('base64');
+      const signingKeyB64 = secret.length >= 64
+        ? Buffer.from(secret.slice(32, 64)).toString('base64')
+        : decryptKeyB64;
+
+      await userXChatStorage.save({
+        ...xchat,
+        private_key: JSON.stringify({ signingKeyB64, decryptKeyB64, keyVersion: signingKeyVersion }),
+        signing_key_version: signingKeyVersion,
+      });
+      log.info('xchat', `[unlock] step 3: private key recovered and cached for user ${userId}`);
+      res.json({ success: true, unlocked: true, signing_key_version: signingKeyVersion });
+    } catch (unlockErr: any) {
+      // Store signing_key_version even if unlock fails
+      await userXChatStorage.save({ ...xchat, signing_key_version: signingKeyVersion });
+      log.warn('xchat', `[unlock] step 3: Juicebox recovery failed — ${unlockErr.message}`);
+      res.json({ success: true, unlocked: false, reason: unlockErr.message, signing_key_version: signingKeyVersion });
+    }
+  } catch (error: any) {
+    log.error('xchat', `unlockKeys failed:`, error.message || error);
+    const status = error.status || 500;
+    const message = error.message?.includes('<!DOCTYPE') ? `${status} Error` : error.message || 'Unknown error';
+    res.status(status).json({ error: message });
   }
 };
