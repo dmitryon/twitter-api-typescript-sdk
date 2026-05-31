@@ -6,6 +6,8 @@ import { log } from "../logger";
 import { toCanonicalConvId, toApiConvId, extractRecipientId } from "../xchat/xchat-utils";
 import { encryptMessage, encryptReaction, encryptEdit, unwrapConversationKey, secretboxDecrypt, wrapConversationKey, getPublicKeyFromScalar, spkiToRawPublicKey } from "../xchat/chat-crypto";
 import { extractContentsFromMessageEvent, decodeMessageEntryHolder } from "../xchat/chat-thrift";
+import { decode } from "../xchat/thrift-codec";
+import { MessageEventSchema } from "../xchat/thrift-models";
 import { recover } from "../xchat/juicebox/client";
 import crypto from "crypto";
 import fs from "fs/promises";
@@ -139,6 +141,28 @@ export const getXChatMessages = async (req: Request, res: Response) => {
         if (convKey && event.encoded_event) {
           try {
             const eventBuf = Buffer.from(event.encoded_event, 'base64');
+
+            // Check for group change events (not encrypted)
+            const fullEvent = decode(eventBuf, MessageEventSchema);
+            if (fullEvent.detail?.groupChangeEvent) {
+              const gc = fullEvent.detail.groupChangeEvent.group_change;
+              if (gc?.group_member_add) {
+                msg.group_event = { type: 'member_add', member_ids: gc.group_member_add.member_ids };
+              } else if (gc?.group_member_remove) {
+                msg.group_event = { type: 'member_remove', member_ids: gc.group_member_remove.member_ids };
+              } else if (gc?.group_title_change) {
+                msg.group_event = { type: 'title_change', title: gc.group_title_change.custom_title };
+              }
+              msg.encrypted = false;
+              messages.push(msg);
+              continue;
+            }
+
+            // Skip standalone key change events
+            if (fullEvent.detail?.conversationKeyChangeEvent && !fullEvent.detail?.messageCreateEvent) {
+              continue;
+            }
+
             const contents = extractContentsFromMessageEvent(eventBuf);
             if (contents) {
               const plaintext = await secretboxDecrypt(contents, convKey);

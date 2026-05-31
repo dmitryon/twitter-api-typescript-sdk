@@ -295,6 +295,17 @@ window.XChatUI = (() => {
               ${renderUser(m.sender_id, isSelf)} edited a message: "${escapeHtml(m.edit.updated_text || '')}"
             </div>`;
           }
+          // Group membership events
+          if (m.group_event) {
+            const ge = m.group_event;
+            let desc = '';
+            if (ge.type === 'member_add') desc = `added ${(ge.member_ids || []).map(id => userCache[id]?.name || id).join(', ')}`;
+            else if (ge.type === 'member_remove') desc = `${(ge.member_ids || []).map(id => userCache[id]?.name || id).join(', ')} left`;
+            else if (ge.type === 'title_change') desc = `changed group title to "${escapeHtml(ge.title || '')}"`;            return `<div class="xchat-message xchat-msg-event xchat-group-event">
+              <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''}</span>
+              👥 ${desc}
+            </div>`;
+          }
           const replyHtml = m.reply_to ? `<div class="xchat-reply-preview"><span class="xchat-reply-sender">${m.reply_to.sender_display_name || m.reply_to.sender_id || ''}</span> ${escapeHtml(m.reply_to.message_text || '')}</div>` : '';
           const textHtml = m.text ? `<div>${renderTextWithEntities(m.text, m.entities)}</div>` : '';
           const attHtml = m.attachments?.length ? m.attachments.map(a => {

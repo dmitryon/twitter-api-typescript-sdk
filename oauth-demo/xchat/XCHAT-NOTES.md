@@ -721,21 +721,107 @@ MessageContents {
 | Typing indicator | `POST /typing` | None | None |
 
 
-## Group Member Removal Does NOT Trigger Key Rotation
+## Group Member Changes and Key Rotation
 
-**Tested 2026-05-31:** A member left group conversation `g2061081815574561070`. Results:
+**Tested 2026-05-31** on group `g2061081815574561070`:
 
-- `group_member_remove` event appears in `GET /events` response
+### Member Removal → NO Key Rotation
+- `group_member_remove` event appears in `GET /events`
 - **No new key version generated** — remaining members still use the original key (`1780235173093`)
-- The `conversation_key_events` in API metadata still contains participant keys for all 3 original members (including the removed one)
-- **No XAA webhook delivered** for the membership change — only `chat.received`/`chat.sent` events trigger webhooks
+- The removed member retains the old key (no post-removal secrecy)
+- **No XAA webhook delivered** for the removal
 
-**Security implication:** A removed member who retained the conversation key can still decrypt future messages sent by remaining members. The protocol does not enforce post-removal secrecy.
+### Member Re-Added → Key IS Rotated
+- `group_member_add` event + `conversation_key_change_event` with new key version
+- New key version `1780250974432` generated (was `1780235173093`)
+- Participant keys wrapped for all 3 members (including re-added one)
+- The re-added member **cannot see old messages** (only has the new key — confirmed in X app UI)
+- `conversation_key_events` in API metadata now contains 2 key entries
+- **No XAA webhook delivered** for the addition either
 
-**Missing webhook event types:** XAA subscriptions only deliver `chat.received` and `chat.sent`. The following events are NOT delivered via webhook:
+### Security Implications
+- **Forward secrecy on add:** New members can't read history (key rotated)
+- **No forward secrecy on remove:** Removed members could decrypt future messages (key NOT rotated)
+- This is a deliberate trade-off: privacy of existing conversation > post-removal security
+
+### Missing Webhook Event Types
+XAA subscriptions only deliver `chat.received` and `chat.sent`. The following events are NOT delivered via webhook (even with `conversation.join` subscription):
 - `group_member_remove` / `group_member_add`
 - `group_title_change` / `group_avatar_change`
-- `conversation_key_change_event` (standalone, without a message)
+- `conversation_key_change_event` (standalone)
 - `conversation_delete`
 
 These events are only visible by polling `GET /2/chat/conversations/{id}/events`.
+
+### Group Event JSON Examples (from API)
+
+**group_member_remove** (user left):
+```json
+{
+  "id": "2061146716716642304",
+  "created_at_msec": "1780250646177",
+  "sender_id": "2055625073969508352",
+  "conversation_id": "g2061081815574561070",
+  "message_event_signature": { "signature": "...", "signature_version": "7", ... },
+  "encoded_event": "<thrift: groupChangeEvent.group_member_remove>"
+}
+```
+Decoded thrift `detail.groupChangeEvent`:
+```json
+{
+  "group_change": {
+    "group_member_remove": {
+      "member_ids": ["2055625073969508352"]
+    }
+  }
+}
+```
+
+**group_member_add** (admin re-added user) — triggers key rotation:
+```json
+{
+  "id": "2061148095422111744",
+  "created_at_msec": "1780250974885",
+  "sender_id": "2060730035040829440",
+  "conversation_id": "g2061081815574561070",
+  "message_event_signature": { "signature": "...", "signature_version": "7", ... },
+  "encoded_event": "<thrift: groupChangeEvent.group_member_add>"
+}
+```
+Decoded thrift `detail.groupChangeEvent`:
+```json
+{
+  "group_change": {
+    "group_member_add": {
+      "member_ids": ["2055625073969508352"],
+      "current_member_ids": ["2055579677322792960", "2060730035040829440"],
+      "current_admin_ids": ["2060730035040829440"],
+      "conversation_key_version": "1780250974432"
+    }
+  }
+}
+```
+
+**conversation_key_change_event** (new key distributed with member add):
+```json
+{
+  "id": "2061148095174627571",
+  "created_at_msec": "1780250974830",
+  "sender_id": "2060730035040829440",
+  "encoded_event": "<thrift: conversationKeyChangeEvent>"
+}
+```
+Decoded thrift `detail.conversationKeyChangeEvent`:
+```json
+{
+  "conversation_key_version": "1780250974432",
+  "conversation_participant_keys": [
+    { "user_id": "2055625073969508352", "public_key_version": "1778934541573", "encrypted_conversation_key": "<152 chars>" },
+    { "user_id": "2055579677322792960", "public_key_version": "1778923517205", "encrypted_conversation_key": "<152 chars>" },
+    { "user_id": "2060730035040829440", "public_key_version": "1780151593317", "encrypted_conversation_key": "<152 chars>" }
+  ],
+  "ratchet_tree": null
+}
+```
+
+**Note:** The `conversation_key_change_event` is a separate event (different sequence ID) from the `group_member_add` event, but they share the same `conversation_key_version`. The key change event always precedes the group change event chronologically.
