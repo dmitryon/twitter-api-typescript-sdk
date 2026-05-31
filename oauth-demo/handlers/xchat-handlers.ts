@@ -4,7 +4,13 @@ import { rest } from "twitter-api-sdk";
 import { UserPublicKeyStorage, ConversationKeyStorage, UserXChatStorage, JuiceboxCallLogger } from "../storage";
 import { log } from "../logger";
 import { toCanonicalConvId, toApiConvId, extractRecipientId } from "../xchat/xchat-utils";
+import { encryptMessage, unwrapConversationKey, secretboxDecrypt, wrapConversationKey, getPublicKeyFromScalar, spkiToRawPublicKey } from "../xchat/chat-crypto";
+import { extractContentsFromMessageEvent, decodeMessageEntryHolder } from "../xchat/chat-thrift";
+import { recover } from "../xchat/juicebox/client";
 import crypto from "crypto";
+import fs from "fs/promises";
+import path from "path";
+import { __dirname } from "../esm-utils";
 
 const userPublicKeyStorage = new UserPublicKeyStorage();
 const conversationKeyStorage = new ConversationKeyStorage();
@@ -71,7 +77,7 @@ export const getXChatMessages = async (req: Request, res: Response) => {
       const cached = await conversationKeyStorage.load(canonicalId);
       if (cached?.encrypted_conversation_key) {
         try {
-          const { unwrapConversationKey } = await import('../xchat/chat-crypto.js');
+          
           convKey = unwrapConversationKey(cached.encrypted_conversation_key, keys.decryptKeyB64);
         } catch {}
       }
@@ -87,7 +93,7 @@ export const getXChatMessages = async (req: Request, res: Response) => {
 
       // Extract conversation key from response metadata if not already cached
       if (!convKey && keys?.decryptKeyB64 && (eventsResp as any).meta?.conversation_key_events?.length) {
-        const { unwrapConversationKey } = await import('../xchat/chat-crypto.js');
+        
         for (const keyEventB64 of (eventsResp as any).meta.conversation_key_events) {
           try {
             const keyBuf = Buffer.from(keyEventB64, 'base64');
@@ -116,8 +122,8 @@ export const getXChatMessages = async (req: Request, res: Response) => {
       }
 
       const messages: any[] = [];
-      const { extractContentsFromMessageEvent, decodeMessageEntryHolder } = await import('../xchat/chat-thrift.js');
-      const { secretboxDecrypt } = await import('../xchat/chat-crypto.js');
+      
+      
 
       for (const event of (eventsResp as any).data || []) {
         const msg: any = {
@@ -219,19 +225,16 @@ export const getXChatMessages = async (req: Request, res: Response) => {
     }
 
     // Fallback: load from webhook files
-    const fs = await import('fs/promises');
-    const path = await import('path');
-    const { __dirname } = await import('../esm-utils.js');
-    const webhookDir = path.default.join(__dirname(import.meta.url), '../data/webhooks');
+    const webhookDir = path.join(__dirname(import.meta.url), '../data/webhooks');
 
     let messages: any[] = [];
     try {
-      const files = await fs.default.readdir(webhookDir);
+      const files = await fs.readdir(webhookDir);
       const webhookFiles = files.filter(f => f.endsWith('.json')).sort();
 
       for (const file of webhookFiles) {
         try {
-          const data = JSON.parse(await fs.default.readFile(path.default.join(webhookDir, file), 'utf8'));
+          const data = JSON.parse(await fs.readFile(path.join(webhookDir, file), 'utf8'));
           const payload = data.body?.data?.payload;
           if (!payload?.conversation_id) continue;
           if (payload.conversation_id !== canonicalId && payload.conversation_id !== apiConvId) continue;
@@ -299,7 +302,7 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
 
     if (xchat.private_key && encryptedConvKey) {
       log.debug('xchat', `[send] step 2: using cached conversation key (version=${convKeyEntry?.key_version})`);
-      const { encryptMessage } = await import('../xchat/chat-crypto');
+      
       try {
         const payload = await encryptMessage(
           xchat.private_key,
@@ -322,7 +325,7 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
     } else if (xchat.private_key && !encryptedConvKey) {
       log.info('xchat', `[send] step 2: no conversation key found, initializing new conversation`);
       try {
-        const { wrapConversationKey, getPublicKeyFromScalar, spkiToRawPublicKey } = await import('../xchat/chat-crypto');
+        
         const keys = JSON.parse(xchat.private_key!);
 
         // Generate a new 32-byte conversation key
@@ -376,7 +379,7 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
         log.debug('xchat', `[send] step 2f: conversation key cached`);
 
         // Encrypt the message with the new key
-        const { encryptMessage } = await import('../xchat/chat-crypto');
+        
         const payload = await encryptMessage(
           xchat.private_key!, ownWrapped, text,
           message_id, userId, convKeyId,
@@ -704,7 +707,7 @@ export const unlockKeys = async (req: Request, res: Response) => {
 
     // Step 3: attempt Juicebox unlock
     log.info('xchat', `[unlock] step 3: starting Juicebox recovery`);
-    const { recover } = await import('../xchat/juicebox/client.js');
+    
     try {
       // Build config JSON in the format recover() expects
       const jb = keyEntry.juicebox_config as any;
