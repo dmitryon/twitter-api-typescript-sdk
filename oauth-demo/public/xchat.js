@@ -318,10 +318,10 @@ window.XChatUI = (() => {
             return `<div class="xchat-attachment xchat-file-attachment">📎 <strong>${name}</strong> <span class="xchat-file-meta">${a.type || 'file'}${dimStr}${sizeStr}</span> ${downloadBtn}</div>`;
           }).join('') : '';
           // Reactions display
-          const reactionsHtml = m.reactions?.length ? `<div class="xchat-reactions">${m.reactions.map(r => `<span class="xchat-reaction" title="${r.sender_id}">${r.emoji}</span>`).join('')}</div>` : '';
+          const reactionsHtml = m.reactions?.length ? `<div class="xchat-reactions">${m.reactions.map(r => `<span class="xchat-reaction" title="${r.sender_id} (click to remove)" onclick="XChatUI.sendReaction('${m.id}', '${r.emoji}', true)">${r.emoji}</span>`).join('')}</div>` : '';
           const editedTag = m.edited ? '<span class="xchat-edited">(edited)</span>' : '';
           return `
-            <div class="xchat-message ${isSelf ? 'xchat-msg-self' : ''}">
+            <div class="xchat-message ${isSelf ? 'xchat-msg-self' : ''}" data-msg-id="${m.id}">
               <div class="xchat-msg-meta">
                 ${renderUser(m.sender_id, isSelf)}
                 <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''} ${editedTag}</span>
@@ -737,27 +737,25 @@ window.XChatUI = (() => {
     const picker = document.createElement('div');
     picker.id = 'xchat-react-picker';
     picker.className = 'xchat-react-picker';
-    picker.innerHTML = emojis.map(e => `<button class="xchat-emoji-btn" onclick="XChatUI.sendReaction('${messageId}', '${e}')">${e}</button>`).join('');
-    // Find the message element and append picker
-    const msgEl = document.querySelector(`[data-msg-id="${messageId}"] .xchat-msg-actions`) ||
-                  event?.target?.closest('.xchat-msg-actions');
-    if (msgEl) msgEl.appendChild(picker);
-    else document.getElementById('xchatContent')?.appendChild(picker);
-    setTimeout(() => document.addEventListener('click', function dismiss(e) {
-      if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', dismiss); }
-    }), 10);
+    picker.innerHTML = emojis.map(e => `<button class="xchat-emoji-btn" onclick="event.stopPropagation(); XChatUI.sendReaction('${messageId}', '${e}')">${e}</button>`).join('');
+    // Attach to the message's actions area
+    const btn = document.querySelector(`[data-msg-id="${messageId}"] .xchat-msg-actions`);
+    if (btn) { btn.style.position = 'relative'; btn.appendChild(picker); }
+    setTimeout(() => {
+      const dismiss = (e) => { if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', dismiss); } };
+      document.addEventListener('click', dismiss);
+    }, 10);
   }
 
-  async function sendReaction(messageId, emoji) {
+  async function sendReaction(messageId, emoji, remove) {
     const picker = document.getElementById('xchat-react-picker');
     if (picker) picker.remove();
     try {
       await fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/react?auth=${state.auth}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message_sequence_id: messageId, emoji }),
+        body: JSON.stringify({ message_sequence_id: messageId, emoji, remove: !!remove }),
       });
-      // Refresh messages
       openConversation(state.currentConversation);
     } catch (e) {
       alert(`Reaction failed: ${e.message}`);
