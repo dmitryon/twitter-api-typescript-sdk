@@ -4,7 +4,7 @@
 
 ## Encryption Stack (Verified)
 
-The official migration guide and chat-xdk documentation are **misleading** about the actual crypto primitives used. The correct stack was reverse-engineered from the Go reference implementation at `mautrix-twitter` (`pkg/twittermeow/crypto/`).
+The official migration guide references the **chat-xdk** (Rust SDK with Python bindings) which implies X25519/Ed25519/AES-256-GCM from its API surface. However, the actual crypto primitives used by the server are different. The correct stack was reverse-engineered from the Go reference implementation at `mautrix-twitter` (`pkg/twittermeow/crypto/`).
 
 | What the docs imply | What's actually used |
 |---------------------|---------------------|
