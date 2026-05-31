@@ -238,6 +238,27 @@ async function decryptXChatWebhook(body: any): Promise<any> {
 
   // Decode thrift MessageEntryHolder
   const decoded = decodeMessageEntryHolder(plaintext);
+
+  if (decoded?.reaction) {
+    log.info('webhook', `[xchat-decrypt] reaction ${decoded.reaction.action}: ${decoded.reaction.emoji} on ${decoded.reaction.message_sequence_id}`);
+    return {
+      sender_id: payload.sender_id,
+      conversation_id: conversationId,
+      reaction: decoded.reaction,
+      decrypted_at: new Date().toISOString(),
+    };
+  }
+
+  if (decoded?.edit) {
+    log.info('webhook', `[xchat-decrypt] edit on ${decoded.edit.message_sequence_id}: "${decoded.edit.updated_text?.slice(0, 50)}"`);
+    return {
+      sender_id: payload.sender_id,
+      conversation_id: conversationId,
+      edit: decoded.edit,
+      decrypted_at: new Date().toISOString(),
+    };
+  }
+
   const text = decoded?.message?.text;
   const attachments = decoded?.message?.attachments;
 
@@ -258,6 +279,7 @@ async function decryptXChatWebhook(body: any): Promise<any> {
       height: a.height,
       filesize_bytes: a.filesize_bytes,
     })),
+    reply_to: decoded?.message?.reply_to,
     decrypted_at: new Date().toISOString(),
   };
 }
