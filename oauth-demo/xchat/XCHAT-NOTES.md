@@ -303,6 +303,29 @@ Webhook `message_event_signature.signature_version` is `"7"` (not `"3"` as used 
 
 HTTP 200, no `data` field, no error. This can be used to check whether a user has XChat enabled.
 
+### Detecting Registration vs Recovery in the UI
+
+The settings endpoint should return a `needs_registration` flag:
+
+| State | `has_private_key` | `needs_registration` | UI Action |
+|-------|-------------------|---------------------|------------|
+| Keys cached locally | `true` | `false` | Ready to use, no PIN needed |
+| Keys on server, not cached | `false` | `false` | Show "Enter PIN to unlock" |
+| No keys on server | `false` | `true` | Show "Set up X Chat encryption" |
+
+Detection logic:
+1. Check local cache (`data/user-xchat/{userId}.json`) for `private_key`
+2. If not cached, call `GET /2/users/{userId}/public_keys`
+3. If response has `public_key` field → enrolled, needs recovery
+4. If response is empty `{}` → not enrolled, needs registration
+
+### GraphQL API for Public Keys (from HAR)
+
+The X web client uses a GraphQL endpoint instead of the REST API:
+- `GET https://api.x.com/graphql/GJQbOZALDO5D3Zp2IZhH6w/GetPublicKeys?variables={"ids":["..."],"include_juicebox_tokens":true}`
+- Returns `public_keys_with_token_map` array (empty for non-enrolled users)
+- Includes `chat_permissions.can_dm_on_xchat` boolean
+
 ### Enrollment is Opt-In (Not Universal)
 
 Empirical testing (May 2026) shows XChat enrollment is **not automatic**. Many major accounts are not enrolled:
