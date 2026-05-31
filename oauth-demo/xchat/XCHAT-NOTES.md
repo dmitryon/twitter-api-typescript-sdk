@@ -345,6 +345,29 @@ Pattern unclear — possibly tied to Premium subscription or manual opt-in via S
 
 No xchat data is stored on the integration — all xchat data is user-scoped or conversation-scoped.
 
+### Conversation Key Caching Strategy
+
+We cache only the **latest** conversation key per conversation (single key version). This is a performance optimization, not a correctness requirement:
+
+**Why caching is optional:**
+- `GET /2/chat/conversations/{id}/events` returns `conversation_key_events` in response metadata — the current key can be extracted on the fly
+- Webhooks include `conversation_key_change_event` — key is available inline
+- For sending, we only need the current key (not historical ones)
+
+**Why we cache anyway:**
+- Avoids re-extracting the key from thrift on every request
+- The key extraction involves searching for our user ID in a binary blob — not free
+- Most conversations have a single key version that rarely rotates
+
+**What we DON'T store:**
+- Historical key versions — if a message was encrypted with an old key we don't have, it shows as `[encrypted — key version unavailable]`
+- This is acceptable because the `/events` API provides the current key, and old messages are rare edge cases (key rotation only happens on member changes)
+
+**Key rotation handling:**
+- When a new key arrives (webhook or API metadata), we overwrite the cached key
+- For sending: always use the most recent key version
+- Replies to old messages don't need the old key — the reply preview text is embedded as plaintext in the new message's encrypted payload
+
 
 ## Additional Pitfalls (added 2026-05-16)
 
