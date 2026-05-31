@@ -751,12 +751,23 @@ window.XChatUI = (() => {
     const picker = document.getElementById('xchat-react-picker');
     if (picker) picker.remove();
     try {
-      await fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/react?auth=${state.auth}`, {
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/react?auth=${state.auth}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message_sequence_id: messageId, emoji, remove: !!remove }),
       });
-      openConversation(state.currentConversation);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+      // Update local state without refetching
+      const msg = state.messages.find(m => m.id === messageId);
+      if (msg) {
+        if (!msg.reactions) msg.reactions = [];
+        if (remove) {
+          msg.reactions = msg.reactions.filter(r => !(r.emoji === emoji && r.sender_id === state.userId));
+        } else {
+          msg.reactions.push({ emoji, sender_id: state.userId });
+        }
+        renderMessages();
+      }
     } catch (e) {
       alert(`Reaction failed: ${e.message}`);
     }
@@ -782,12 +793,19 @@ window.XChatUI = (() => {
     const text = input.value.trim();
     if (!text) return;
     try {
-      await fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/edit?auth=${state.auth}`, {
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/edit?auth=${state.auth}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message_sequence_id: messageId, text }),
       });
-      openConversation(state.currentConversation);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+      // Update local state without refetching
+      const msg = state.messages.find(m => m.id === messageId);
+      if (msg) {
+        msg.text = text;
+        msg.edited = true;
+      }
+      renderMessages();
     } catch (e) {
       alert(`Edit failed: ${e.message}`);
     }
