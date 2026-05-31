@@ -527,6 +527,10 @@ Reactions are **NOT embedded in the message payload** — neither in the encrypt
 
 **Our approach** (aggregating reaction events into parent messages in the handler) is identical to what the X app does internally.
 
+### Multiple Reactions Per User
+
+The X Chat protocol allows sending **multiple reaction_add events** for the same message from the same user. The server accepts them all with 200 OK. However, the X app UI only displays **one reaction per user per message** (the latest one). Our aggregation doesn't deduplicate — if a user reacts with 👍 then 🔥, both appear. The X app likely deduplicates in its local SQLite DB (keeping only the most recent per user+message).
+
 ### Reaction Event Format
 ```
 MessageEntryHolder {
