@@ -748,6 +748,8 @@ div.xchat-media-broken { border: 1px dashed #666; padding: 12px; border-radius: 
 .xchat-emoji-btn:hover { background: #444; }
 .xchat-edit-form { display: flex; gap: 6px; align-items: center; }
 .xchat-edit-form input { flex: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid #555; background: #1a1a1a; color: #eee; }
+.xchat-reply-preview-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #1a1a1a; border-left: 3px solid #555; border-radius: 4px; margin: 0 10px; font-size: 0.85em; color: #aaa; }
+.xchat-reply-indicator { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .xchat-reply-preview { border-left: 3px solid #555; padding: 4px 8px; margin-bottom: 4px; font-size: 0.85em; color: #aaa; background: #1a1a1a; border-radius: 4px; }
 .xchat-reply-sender { font-weight: bold; color: #ccc; }
 .xchat-entity-hashtag { color: #1d9bf0; font-weight: 500; }

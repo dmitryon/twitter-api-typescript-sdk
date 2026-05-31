@@ -270,7 +270,7 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
   try {
     const { id, conversationId } = req.params;
     const { auth: authType } = req.query;
-    const { text, media_hash_key, conversation_token, key_version } = req.body;
+    const { text, media_hash_key, conversation_token, key_version, reply_to } = req.body;
 
     const resolved = await resolveAuth(id, authType as string);
     if (!resolved) {
@@ -313,6 +313,7 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
           convKeyId,
           key_version ?? convKeyEntry?.key_version ?? '1',
           xchat.signing_key_version ?? '1',
+          reply_to,
         );
         encoded_message_create_event = payload.encrypted_content;
         encoded_message_event_signature = payload.encoded_event_signature;
@@ -384,6 +385,7 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
           xchat.private_key!, ownWrapped, text,
           message_id, userId, convKeyId,
           keyVersion, keys.keyVersion,
+          reply_to,
         );
         encoded_message_create_event = payload.encrypted_content;
         encoded_message_event_signature = payload.encoded_event_signature;

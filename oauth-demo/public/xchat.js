@@ -1,5 +1,5 @@
 window.XChatUI = (() => {
-  let state = { integrationId: null, appId: null, auth: 'oauth2', conversations: [], currentConversation: null, messages: [], userId: null, nextToken: null };
+  let state = { integrationId: null, appId: null, auth: 'oauth2', conversations: [], currentConversation: null, messages: [], userId: null, nextToken: null, replyTo: null };
   const userCache = {};
 
   function getModal() {
@@ -334,6 +334,7 @@ window.XChatUI = (() => {
                 ${m.encrypted ? '<div class="xchat-encrypted-payload">[encrypted — keys not available]</div>' : ''}
                 ${!m.encrypted && m.id ? `<div class="xchat-msg-actions">
                   <button class="xchat-action-btn" onclick="XChatUI.showReactPicker('${m.id}')" title="React">😀</button>
+                  <button class="xchat-action-btn" onclick="XChatUI.startReply('${m.id}')" title="Reply">↩️</button>
                   ${isSelf && m.text ? `<button class="xchat-action-btn" onclick="XChatUI.startEdit('${m.id}', this)" title="Edit">✏️</button>` : ''}
                 </div>` : ''}
               </div>
@@ -348,6 +349,7 @@ window.XChatUI = (() => {
       ${sourceNote}
       ${loadMoreBtn}
       <div class="xchat-messages-list">${messagesHtml}</div>
+      <div id="xchatReplyPreview" class="xchat-reply-preview-bar" style="display:none"></div>
       <div class="xchat-send-form">
         <input type="file" id="xchatFileInput" accept="image/*" style="display:none" onchange="XChatUI.onFileSelect(event)">
         <button class="btn btn-secondary" onclick="document.getElementById('xchatFileInput').click()">📎</button>
@@ -400,12 +402,14 @@ window.XChatUI = (() => {
           media_hash_key,
           conversation_token: state.conversationToken,
           key_version: state.keyVersion,
+          reply_to: state.replyTo || undefined,
         })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Send failed');
 
       input.value = '';
+      cancelReply();
       clearFile();
       openConversation(state.currentConversation);
     } catch (e) {
@@ -730,6 +734,30 @@ window.XChatUI = (() => {
     } catch {}
   }
 
+  function startReply(messageId) {
+    const msg = state.messages.find(m => m.id === messageId);
+    if (!msg) return;
+    state.replyTo = {
+      message_sequence_id: messageId,
+      message_text: msg.text || '',
+      sender_id: msg.sender_id,
+      sender_display_name: userCache[msg.sender_id]?.name || msg.sender_id,
+    };
+    // Show reply preview above the input
+    const preview = document.getElementById('xchatReplyPreview');
+    if (preview) {
+      preview.innerHTML = `<span class="xchat-reply-indicator">↩️ Replying to <strong>${escapeHtml(state.replyTo.sender_display_name)}</strong>: ${escapeHtml(state.replyTo.message_text.slice(0, 60))}${state.replyTo.message_text.length > 60 ? '...' : ''}</span> <button class="xchat-action-btn" onclick="XChatUI.cancelReply()">✕</button>`;
+      preview.style.display = 'flex';
+    }
+    document.getElementById('xchatMsgInput')?.focus();
+  }
+
+  function cancelReply() {
+    state.replyTo = null;
+    const preview = document.getElementById('xchatReplyPreview');
+    if (preview) { preview.innerHTML = ''; preview.style.display = 'none'; }
+  }
+
   function showReactPicker(messageId) {
     const emojis = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '👎'];
     const existing = document.getElementById('xchat-react-picker');
@@ -832,5 +860,5 @@ window.XChatUI = (() => {
     }
   }
 
-  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit };
+  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit, startReply, cancelReply };
 })();
