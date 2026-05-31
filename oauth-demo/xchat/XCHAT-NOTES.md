@@ -361,7 +361,7 @@ We cache only the **latest** conversation key per conversation (single key versi
 
 **What we DON'T store:**
 - Historical key versions — if a message was encrypted with an old key we don't have, it shows as `[encrypted — key version unavailable]`
-- This is acceptable because the `/events` API provides the current key, and old messages are rare edge cases (key rotation only happens on member changes)
+- This is acceptable because the `/events` API provides the current key, and old messages are rare edge cases (key rotation is supported by the protocol but not enforced in practice)
 
 **Key rotation handling:**
 - When a new key arrives (webhook or API metadata), we overwrite the cached key
@@ -719,3 +719,23 @@ MessageContents {
 | Edit message | `POST /messages` | `MessageEntryContents.message_edit` | "7" |
 | Delete message | GraphQL `DeleteMessageMutation` | Thrift `MessageDeleteEvent` (not secretbox) | "4" |
 | Typing indicator | `POST /typing` | None | None |
+
+
+## Group Member Removal Does NOT Trigger Key Rotation
+
+**Tested 2026-05-31:** A member left group conversation `g2061081815574561070`. Results:
+
+- `group_member_remove` event appears in `GET /events` response
+- **No new key version generated** — remaining members still use the original key (`1780235173093`)
+- The `conversation_key_events` in API metadata still contains participant keys for all 3 original members (including the removed one)
+- **No XAA webhook delivered** for the membership change — only `chat.received`/`chat.sent` events trigger webhooks
+
+**Security implication:** A removed member who retained the conversation key can still decrypt future messages sent by remaining members. The protocol does not enforce post-removal secrecy.
+
+**Missing webhook event types:** XAA subscriptions only deliver `chat.received` and `chat.sent`. The following events are NOT delivered via webhook:
+- `group_member_remove` / `group_member_add`
+- `group_title_change` / `group_avatar_change`
+- `conversation_key_change_event` (standalone, without a message)
+- `conversation_delete`
+
+These events are only visible by polling `GET /2/chat/conversations/{id}/events`.
