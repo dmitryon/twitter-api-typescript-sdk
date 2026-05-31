@@ -4,7 +4,7 @@ import { rest } from "twitter-api-sdk";
 import { UserPublicKeyStorage, ConversationKeyStorage, UserXChatStorage, JuiceboxCallLogger } from "../storage";
 import { log } from "../logger";
 import { toCanonicalConvId, toApiConvId, extractRecipientId } from "../xchat/xchat-utils";
-import { encryptMessage, unwrapConversationKey, secretboxDecrypt, wrapConversationKey, getPublicKeyFromScalar, spkiToRawPublicKey } from "../xchat/chat-crypto";
+import { encryptMessage, encryptReaction, encryptEdit, unwrapConversationKey, secretboxDecrypt, wrapConversationKey, getPublicKeyFromScalar, spkiToRawPublicKey } from "../xchat/chat-crypto";
 import { extractContentsFromMessageEvent, decodeMessageEntryHolder } from "../xchat/chat-thrift";
 import { recover } from "../xchat/juicebox/client";
 import crypto from "crypto";
@@ -743,6 +743,117 @@ export const unlockKeys = async (req: Request, res: Response) => {
     const status = error.status || 500;
     const message = error.message?.includes('<!DOCTYPE') ? `${status} Error` : error.message || 'Unknown error';
     res.status(status).json({ error: message });
+  }
+};
+
+export const reactToMessage = async (req: Request, res: Response) => {
+  try {
+    const { id, conversationId } = req.params;
+    const { auth: authType } = req.query;
+    const { message_sequence_id, emoji, remove } = req.body;
+
+    if (!message_sequence_id || !emoji) {
+      res.status(400).json({ error: "message_sequence_id and emoji required" });
+      return;
+    }
+
+    const resolved = await resolveAuth(id, authType as string);
+    if (!resolved) { res.status(400).json({ error: "Invalid auth" }); return; }
+
+    const userId = await resolveUserId(id);
+    if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
+
+    const xchat = await userXChatStorage.load(userId);
+    if (!xchat?.private_key) { res.status(400).json({ error: "Keys not available" }); return; }
+
+    const canonicalId = toCanonicalConvId(conversationId);
+    const apiConvId = toApiConvId(conversationId);
+    const convKeyEntry = await conversationKeyStorage.load(canonicalId);
+    if (!convKeyEntry?.encrypted_conversation_key) { res.status(400).json({ error: "No conversation key" }); return; }
+
+    const messageId = crypto.randomUUID();
+    const payload = await encryptReaction(
+      xchat.private_key, convKeyEntry.encrypted_conversation_key,
+      message_sequence_id, emoji, !!remove,
+      messageId, userId, canonicalId,
+      convKeyEntry.key_version || '1', xchat.signing_key_version || '1',
+    );
+
+    const response = await resolved.client.chat.sendChatMessage(apiConvId, {
+      encoded_message_create_event: payload.encrypted_content,
+      encoded_message_event_signature: payload.encoded_event_signature,
+      message_id: messageId,
+    });
+
+    log.info('xchat', `Sent reaction ${remove ? 'remove' : 'add'} ${emoji} to ${message_sequence_id}`);
+    res.json(response);
+  } catch (error: any) {
+    log.error('xchat', `reactToMessage failed:`, error.message || error);
+    res.status(error.status || 500).json({ error: error.message || "Unknown error" });
+  }
+};
+
+export const editMessage = async (req: Request, res: Response) => {
+  try {
+    const { id, conversationId } = req.params;
+    const { auth: authType } = req.query;
+    const { message_sequence_id, text } = req.body;
+
+    if (!message_sequence_id || !text) {
+      res.status(400).json({ error: "message_sequence_id and text required" });
+      return;
+    }
+
+    const resolved = await resolveAuth(id, authType as string);
+    if (!resolved) { res.status(400).json({ error: "Invalid auth" }); return; }
+
+    const userId = await resolveUserId(id);
+    if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
+
+    const xchat = await userXChatStorage.load(userId);
+    if (!xchat?.private_key) { res.status(400).json({ error: "Keys not available" }); return; }
+
+    const canonicalId = toCanonicalConvId(conversationId);
+    const apiConvId = toApiConvId(conversationId);
+    const convKeyEntry = await conversationKeyStorage.load(canonicalId);
+    if (!convKeyEntry?.encrypted_conversation_key) { res.status(400).json({ error: "No conversation key" }); return; }
+
+    const messageId = crypto.randomUUID();
+    const payload = await encryptEdit(
+      xchat.private_key, convKeyEntry.encrypted_conversation_key,
+      message_sequence_id, text,
+      messageId, userId, canonicalId,
+      convKeyEntry.key_version || '1', xchat.signing_key_version || '1',
+    );
+
+    const response = await resolved.client.chat.sendChatMessage(apiConvId, {
+      encoded_message_create_event: payload.encrypted_content,
+      encoded_message_event_signature: payload.encoded_event_signature,
+      message_id: messageId,
+    });
+
+    log.info('xchat', `Edited message ${message_sequence_id}`);
+    res.json(response);
+  } catch (error: any) {
+    log.error('xchat', `editMessage failed:`, error.message || error);
+    res.status(error.status || 500).json({ error: error.message || "Unknown error" });
+  }
+};
+
+export const sendTypingIndicator = async (req: Request, res: Response) => {
+  try {
+    const { id, conversationId } = req.params;
+    const { auth: authType } = req.query;
+
+    const resolved = await resolveAuth(id, authType as string);
+    if (!resolved) { res.status(400).json({ error: "Invalid auth" }); return; }
+
+    const apiConvId = toApiConvId(conversationId);
+    await resolved.client.chat.sendChatTypingIndicator(apiConvId);
+    res.json({ success: true });
+  } catch (error: any) {
+    log.error('xchat', `sendTypingIndicator failed:`, error.message || error);
+    res.status(error.status || 500).json({ error: error.message || "Unknown error" });
   }
 };
 

@@ -44,6 +44,20 @@ export function encodePlaintextPayload(text: string, replyTo?: ReplyTo): Buffer 
   );
 }
 
+export function encodeReactionPayload(messageSequenceId: string, emoji: string, remove: boolean): Buffer {
+  const contents: any = remove
+    ? { reaction_remove: { message_sequence_id: messageSequenceId, emoji } }
+    : { reaction_add: { message_sequence_id: messageSequenceId, emoji } };
+  return encode({ contents }, MessageEntryHolderSchema);
+}
+
+export function encodeEditPayload(messageSequenceId: string, updatedText: string): Buffer {
+  return encode(
+    { contents: { message_edit: { message_sequence_id: messageSequenceId, updated_text: updatedText } } },
+    MessageEntryHolderSchema,
+  );
+}
+
 export function encodeMessageCreateEvent(
   encryptedContents: Buffer,
   conversationKeyVersion: string,

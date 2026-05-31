@@ -15,6 +15,8 @@ import {
   encodeMessageCreateEvent,
   encodeMessageEventSignature,
   decodeMessageEntryHolder,
+  encodeReactionPayload,
+  encodeEditPayload,
   type ReplyTo,
 } from './chat-thrift.js';
 
@@ -237,5 +239,70 @@ export async function encryptMessage(
   const sigThrift = encodeMessageEventSignature(signatureB64, signingKeyVersion, signingPublicKeySPKI);
   const encoded_event_signature = sigThrift.toString('base64');
 
+  return { encrypted_content, encoded_event_signature };
+}
+
+
+/**
+ * Encrypt a reaction (add or remove) for the XChat API.
+ * Same flow as encryptMessage but with reaction payload instead of text.
+ */
+export async function encryptReaction(
+  keysJson: string,
+  encryptedConvKeyB64: string,
+  messageSequenceId: string,
+  emoji: string,
+  remove: boolean,
+  messageId: string,
+  senderId: string,
+  conversationId: string,
+  keyVersion: string,
+  signingKeyVersion: string,
+): Promise<EncryptMessageResult> {
+  const keys: SigningKeyPair = JSON.parse(keysJson);
+  const plaintext = encodeReactionPayload(messageSequenceId, emoji, remove);
+  const convKey = unwrapConversationKey(encryptedConvKeyB64, keys.decryptKeyB64);
+  const contentsBytes = await secretboxEncrypt(plaintext, convKey);
+  const mceThrift = encodeMessageCreateEvent(contentsBytes, keyVersion);
+  const encrypted_content = mceThrift.toString('base64');
+  const contentsB64NoPad = contentsBytes.toString('base64').replace(/=/g, '');
+  const preimage = Buffer.from(
+    `MessageCreateEvent,${messageId},${senderId},${conversationId},${keyVersion},${contentsB64NoPad}`
+  );
+  const signatureB64 = ecdsaSign(keys.signingKeyB64, preimage);
+  const signingPublicKeySPKI = getPublicKeySPKI(keys.signingKeyB64);
+  const sigThrift = encodeMessageEventSignature(signatureB64, signingKeyVersion, signingPublicKeySPKI);
+  const encoded_event_signature = sigThrift.toString('base64');
+  return { encrypted_content, encoded_event_signature };
+}
+
+/**
+ * Encrypt a message edit for the XChat API.
+ */
+export async function encryptEdit(
+  keysJson: string,
+  encryptedConvKeyB64: string,
+  messageSequenceId: string,
+  updatedText: string,
+  messageId: string,
+  senderId: string,
+  conversationId: string,
+  keyVersion: string,
+  signingKeyVersion: string,
+): Promise<EncryptMessageResult> {
+  const keys: SigningKeyPair = JSON.parse(keysJson);
+  const plaintext = encodeEditPayload(messageSequenceId, updatedText);
+  const convKey = unwrapConversationKey(encryptedConvKeyB64, keys.decryptKeyB64);
+  const contentsBytes = await secretboxEncrypt(plaintext, convKey);
+  const mceThrift = encodeMessageCreateEvent(contentsBytes, keyVersion);
+  const encrypted_content = mceThrift.toString('base64');
+  const contentsB64NoPad = contentsBytes.toString('base64').replace(/=/g, '');
+  const preimage = Buffer.from(
+    `MessageCreateEvent,${messageId},${senderId},${conversationId},${keyVersion},${contentsB64NoPad}`
+  );
+  const signatureB64 = ecdsaSign(keys.signingKeyB64, preimage);
+  const signingPublicKeySPKI = getPublicKeySPKI(keys.signingKeyB64);
+  const sigThrift = encodeMessageEventSignature(signatureB64, signingKeyVersion, signingPublicKeySPKI);
+  const encoded_event_signature = sigThrift.toString('base64');
   return { encrypted_content, encoded_event_signature };
 }

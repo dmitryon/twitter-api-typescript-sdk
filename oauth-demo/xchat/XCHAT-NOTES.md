@@ -669,15 +669,13 @@ Where `encoded_message_event_detail` is base64 of thrift-encoded `MessageEventDe
 
 ### Typing Indicators
 
-Typing uses the REST API endpoint directly — **no encryption needed**:
+Typing uses the REST API endpoint — **no encryption needed**:
 
 ```
 POST /2/chat/conversations/{id}/typing
 ```
 
-This is already in our generated client as `sendChatTypingIndicator`. No request body needed — just the conversation ID in the path.
-
-The Go bridge uses a GraphQL mutation (`HL96-xZ3Y81IEzAdczDokg/SendTypingNotification`) but the REST API endpoint works the same way.
+**Status (tested 2026-05-31):** Returns **403 "client-not-enrolled"** — same issue as media download. The endpoint exists in the OpenAPI spec but is not available for our access level.
 
 ### Implementation Summary
 

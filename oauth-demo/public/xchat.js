@@ -332,6 +332,10 @@ window.XChatUI = (() => {
                 ${attHtml}
                 ${reactionsHtml}
                 ${m.encrypted ? '<div class="xchat-encrypted-payload">[encrypted — keys not available]</div>' : ''}
+                ${!m.encrypted && m.id ? `<div class="xchat-msg-actions">
+                  <button class="xchat-action-btn" onclick="XChatUI.showReactPicker('${m.id}')" title="React">😀</button>
+                  ${isSelf && m.text ? `<button class="xchat-action-btn" onclick="XChatUI.startEdit('${m.id}', this)" title="Edit">✏️</button>` : ''}
+                </div>` : ''}
               </div>
             </div>
           `;
@@ -726,6 +730,71 @@ window.XChatUI = (() => {
     } catch {}
   }
 
+  function showReactPicker(messageId) {
+    const emojis = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '👎'];
+    const existing = document.getElementById('xchat-react-picker');
+    if (existing) existing.remove();
+    const picker = document.createElement('div');
+    picker.id = 'xchat-react-picker';
+    picker.className = 'xchat-react-picker';
+    picker.innerHTML = emojis.map(e => `<button class="xchat-emoji-btn" onclick="XChatUI.sendReaction('${messageId}', '${e}')">${e}</button>`).join('');
+    // Find the message element and append picker
+    const msgEl = document.querySelector(`[data-msg-id="${messageId}"] .xchat-msg-actions`) ||
+                  event?.target?.closest('.xchat-msg-actions');
+    if (msgEl) msgEl.appendChild(picker);
+    else document.getElementById('xchatContent')?.appendChild(picker);
+    setTimeout(() => document.addEventListener('click', function dismiss(e) {
+      if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', dismiss); }
+    }), 10);
+  }
+
+  async function sendReaction(messageId, emoji) {
+    const picker = document.getElementById('xchat-react-picker');
+    if (picker) picker.remove();
+    try {
+      await fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/react?auth=${state.auth}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_sequence_id: messageId, emoji }),
+      });
+      // Refresh messages
+      openConversation(state.currentConversation);
+    } catch (e) {
+      alert(`Reaction failed: ${e.message}`);
+    }
+  }
+
+  function startEdit(messageId, btnEl) {
+    const msg = state.messages.find(m => m.id === messageId);
+    if (!msg?.text) return;
+    const msgBody = btnEl.closest('.xchat-message').querySelector('.xchat-msg-body');
+    msgBody.innerHTML = `
+      <div class="xchat-edit-form">
+        <input type="text" id="xchatEditInput" value="${escapeHtml(msg.text)}" onkeypress="if(event.key==='Enter')XChatUI.submitEdit('${messageId}')">
+        <button class="btn btn-primary btn-sm" onclick="XChatUI.submitEdit('${messageId}')">Save</button>
+        <button class="btn btn-secondary btn-sm" onclick="XChatUI.openConversation('${state.currentConversation}')">Cancel</button>
+      </div>
+    `;
+    document.getElementById('xchatEditInput')?.focus();
+  }
+
+  async function submitEdit(messageId) {
+    const input = document.getElementById('xchatEditInput');
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+    try {
+      await fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/edit?auth=${state.auth}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_sequence_id: messageId, text }),
+      });
+      openConversation(state.currentConversation);
+    } catch (e) {
+      alert(`Edit failed: ${e.message}`);
+    }
+  }
+
   async function downloadMedia(mediaHashKey, filename) {
     if (!state.integrationId || !state.currentConversation) return;
     const url = `/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(mediaHashKey)}`;
@@ -747,5 +816,5 @@ window.XChatUI = (() => {
     }
   }
 
-  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow };
+  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit };
 })();

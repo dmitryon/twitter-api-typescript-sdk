@@ -379,7 +379,7 @@ Browser -> User: 🔐 chat.received [encrypted payload]\nin 📨 Events modal
 | — | Send reactions (add/remove emoji to messages) | 🔲 Next |
 | — | Edit messages | 🔲 Next |
 | — | Delete messages (for self / for all) | 🔲 Next |
-| — | Typing indicators | 🔲 Next |
+| — | Typing indicators | ❌ Blocked — 403 "client-not-enrolled" (same as media download) |
 | — | Media download (API returns 403) | ❌ Blocked — requires whitelisting from X |
 | — | New conversation key exchange (API returns 404) | ❌ Blocked — endpoint not implemented |
 
