@@ -20,6 +20,34 @@ function hashToPoint(input: Uint8Array) {
 /** 64-byte OPRF output */
 export type OPRFOutput = Uint8Array;
 
+export interface OPRFKeyPair {
+  privateKey: Uint8Array;  // 32-byte scalar
+  publicKey: Uint8Array;   // 32-byte ristretto255 point
+}
+
+/** Generate a random OPRF key pair for registration */
+export function generateOPRFKeyPair(): OPRFKeyPair {
+  const randomBytes = crypto.randomBytes(64);
+  const scalar = Fp.create(bytesToBigInt(randomBytes));
+  const scalarBytes = bigIntToBytes32LE(scalar);
+  const publicPoint = Point.BASE.multiply(scalar);
+  return { privateKey: scalarBytes, publicKey: publicPoint.toBytes() };
+}
+
+/** Evaluate OPRF server-side: output = input^privateKey */
+export function oprfEvaluate(input: Uint8Array, privateKey: Uint8Array): Uint8Array {
+  const scalar = Fp.create(bytesToBigInt(privateKey));
+  const inputPoint = Point.fromHex(toHex(input));
+  return inputPoint.multiply(scalar).toBytes();
+}
+
+function bigIntToBytes32LE(n: bigint): Uint8Array {
+  const bytes = new Uint8Array(32);
+  let val = n;
+  for (let i = 0; i < 32; i++) { bytes[i] = Number(val & 0xFFn); val >>= 8n; }
+  return bytes;
+}
+
 export interface BlindingState {
   blindingFactor: bigint;
   blindedInput: Uint8Array;

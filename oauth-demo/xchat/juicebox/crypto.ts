@@ -6,6 +6,7 @@
 import { sha512 } from '@noble/hashes/sha2.js';
 import { blake2s } from '@noble/hashes/blake2.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
+import crypto from 'crypto';
 import type { OPRFOutput } from './oprf.js';
 
 const MAX_USER_SECRET_LENGTH = 128;
@@ -27,6 +28,18 @@ export function deriveEncryptionKey(seed: Uint8Array, scalarBytes: Uint8Array): 
   writeLengthPrefixed(h, new TextEncoder().encode('User Secret Encryption Key'));
   writeLengthPrefixed(h, scalarBytes);
   return h.digest();
+}
+
+export function encryptSecret(secret: Uint8Array, encryptionKey: Uint8Array): Uint8Array {
+  const padded = new Uint8Array(MAX_USER_SECRET_LENGTH + 1);
+  padded[0] = secret.length;
+  padded.set(secret, 1);
+  // Fill remaining with random padding
+  const padding = new Uint8Array(MAX_USER_SECRET_LENGTH - secret.length);
+  crypto.getRandomValues(padding);
+  padded.set(padding, 1 + secret.length);
+  const cipher = chacha20poly1305(encryptionKey, new Uint8Array(12));
+  return cipher.encrypt(padded);
 }
 
 export function decryptSecret(encryptedSecret: Uint8Array, encryptionKey: Uint8Array): Uint8Array {

@@ -4,10 +4,11 @@
  */
 
 import { ristretto255, ed25519 } from '@noble/curves/ed25519.js';
+import crypto from 'crypto';
 import { hashPIN } from './pin.js';
-import { oprfStart, oprfFinalize, verifyDLEQProof } from './oprf.js';
-import { recoverScalar, recoverPoint, type ScalarShare, type PointShare } from './shamir.js';
-import { deriveUnlockKeyAndCommitment, deriveUnlockKeyTag, deriveEncryptionKey, decryptSecret, deriveEncryptedUserSecretCommitment } from './crypto.js';
+import { oprfStart, oprfFinalize, verifyDLEQProof, generateOPRFKeyPair, oprfEvaluate } from './oprf.js';
+import { recoverScalar, recoverPoint, splitScalar, type ScalarShare, type PointShare } from './shamir.js';
+import { deriveUnlockKeyAndCommitment, deriveUnlockKeyTag, deriveEncryptionKey, decryptSecret, encryptSecret, deriveEncryptedUserSecretCommitment } from './crypto.js';
 import { parseConfig, shareIndex, extractAuthTokens, type JuiceboxConfig } from './config.js';
 import { RealmClient } from './realm.js';
 import type { JuiceboxCallLoggerInterface } from '../../storage.js';
@@ -15,6 +16,112 @@ import type { JuiceboxCallLoggerInterface } from '../../storage.js';
 
 export interface RecoverResult {
   secret: Uint8Array;
+}
+
+/**
+ * Register a PIN-protected secret with Juicebox realms.
+ *
+ * @param pin - The user's PIN (UTF-8 encoded)
+ * @param secret - The 64-byte secret to protect (decrypt_key || signing_key)
+ * @param juiceboxConfigJson - JSON with sdk_config + tokens from AddXChatPublicKeyMutation response
+ * @param userId - The user ID
+ * @param logger - Optional logger
+ */
+export async function register(pin: string, secret: Uint8Array, juiceboxConfigJson: string, userId: string, logger?: JuiceboxCallLoggerInterface): Promise<void> {
+  const configRaw = JSON.parse(juiceboxConfigJson);
+  const config = parseConfig(configRaw);
+  const authTokens = extractAuthTokens(configRaw);
+
+  const realmClients = config.realms.map(r => {
+    const realmIdHex = bytesToHex(r.id);
+    const token = authTokens.get(realmIdHex) ?? '';
+    return new RealmClient(r, token, logger);
+  });
+
+  console.log(`\x1b[2m${new Date().toISOString()}\x1b[0m \x1b[32mINFO\x1b[0m  \x1b[36m[juicebox]\x1b[0m starting registration (${config.realms.length} realms, threshold=${config.registerThreshold})`);
+
+  // Hash PIN (same as recovery)
+  const pinBytes = new TextEncoder().encode(pin);
+  const userInfo = new Uint8Array(0);
+  // Use a fresh version for registration
+  const version = new Uint8Array(16);
+  crypto.randomBytes(16).copy(Buffer.from(version.buffer));
+  const { accessKey, encryptionKeySeed } = await hashPIN(pinBytes, config.pinHashingMode, version, userInfo);
+
+  // Generate OPRF key pair for each realm and compute unlock key
+  const oprfKeys = config.realms.map(() => generateOPRFKeyPair());
+
+  // Compute OPRF output by evaluating locally (we know the private key)
+  // For registration, we simulate the OPRF: hash input to point, multiply by private key, then finalize
+  const { blindingFactor, blindedInput } = oprfStart(accessKey);
+
+  // Evaluate OPRF for each realm and combine via Lagrange interpolation
+  const pointShares: PointShare[] = config.realms.map((r, i) => {
+    const evaluated = oprfEvaluate(blindedInput, oprfKeys[i].privateKey);
+    return {
+      index: shareIndex(config, r.id),
+      secret: ristretto255.Point.fromHex(bytesToHex(evaluated)),
+    };
+  });
+  const combinedPoint = recoverPoint(pointShares.slice(0, config.recoverThreshold));
+  const oprfOutput = oprfFinalize(accessKey, blindingFactor, combinedPoint.toBytes());
+
+  // Derive unlock key and commitment
+  const { unlockKey, commitment: unlockKeyCommitment } = deriveUnlockKeyAndCommitment(oprfOutput);
+
+  // Split encryption key scalar into shares
+  const randomScalar = bytesToBigIntLE(crypto.randomBytes(32));
+  const indices = config.realms.map(r => shareIndex(config, r.id));
+  const scalarShares = splitScalar(randomScalar, indices, config.recoverThreshold);
+
+  // Derive encryption key from combined scalar
+  const combinedScalarBytes = bigIntToBytes32LE(randomScalar);
+  const encryptionKey = deriveEncryptionKey(encryptionKeySeed, combinedScalarBytes);
+
+  // Encrypt the secret
+  const encryptedSecret = encryptSecret(secret, encryptionKey);
+
+  // Phase 1: Register1 on all realms
+  console.log(`\x1b[2m${new Date().toISOString()}\x1b[0m \x1b[34mDEBUG\x1b[0m \x1b[36m[juicebox]\x1b[0m phase 1: sending Register1 to all realms`);
+  const phase1Results = await Promise.allSettled(
+    realmClients.map(c => c.makeRequest({ register1: true }))
+  );
+  for (let i = 0; i < phase1Results.length; i++) {
+    const r = phase1Results[i];
+    if (r.status === 'rejected') throw new Error(`Register1 failed on realm ${i}: ${r.reason?.message}`);
+  }
+
+  // Phase 2: Register2 on all realms
+  console.log(`\x1b[2m${new Date().toISOString()}\x1b[0m \x1b[34mDEBUG\x1b[0m \x1b[36m[juicebox]\x1b[0m phase 2: sending Register2 to all realms`);
+  const phase2Results = await Promise.allSettled(
+    config.realms.map((r, i) => {
+      const scalarShareBytes = bigIntToBytes32LE(scalarShares[i].secret);
+      const unlockKeyTag = deriveUnlockKeyTag(unlockKey, r.id);
+      const encSecretCommitment = deriveEncryptedUserSecretCommitment(unlockKey, r.id, scalarShareBytes, encryptedSecret);
+
+      return realmClients[i].makeRequest({
+        register2: {
+          version,
+          oprfPrivateKey: oprfKeys[i].privateKey,
+          oprfPublicKey: oprfKeys[i].publicKey,
+          oprfVerifyingKey: oprfKeys[i].publicKey, // For now, same as public key
+          unlockKeyCommitment: unlockKeyCommitment,
+          unlockKeyTag,
+          encryptionKeyScalarShare: scalarShareBytes,
+          encryptedSecret,
+          encryptedSecretCommitment: encSecretCommitment,
+          numGuesses: configRaw.max_guess_count ?? 20,
+        },
+      });
+    })
+  );
+
+  for (let i = 0; i < phase2Results.length; i++) {
+    const r = phase2Results[i];
+    if (r.status === 'rejected') throw new Error(`Register2 failed on realm ${i}: ${r.reason?.message}`);
+  }
+
+  console.log(`\x1b[2m${new Date().toISOString()}\x1b[0m \x1b[32mINFO\x1b[0m  \x1b[36m[juicebox]\x1b[0m registration complete (secret stored on ${config.realms.length} realms)`);
 }
 
 /**

@@ -26,12 +26,40 @@ export interface SecretsRequest {
   recover1?: boolean;
   recover2?: { version: Uint8Array; oprfBlindedInput: Uint8Array };
   recover3?: { version: Uint8Array; unlockKeyTag: Uint8Array };
+  register1?: boolean;
+  register2?: {
+    version: Uint8Array;
+    oprfPrivateKey: Uint8Array;
+    oprfPublicKey: Uint8Array;
+    oprfVerifyingKey: Uint8Array;
+    unlockKeyCommitment: Uint8Array;
+    unlockKeyTag: Uint8Array;
+    encryptionKeyScalarShare: Uint8Array;
+    encryptedSecret: Uint8Array;
+    encryptedSecretCommitment: Uint8Array;
+    numGuesses: number;
+  };
 }
 
 function marshalRequest(req: SecretsRequest): Uint8Array {
   if (req.recover1) return cborEncode('Recover1');
   if (req.recover2) return cborEncode({ Recover2: { version: Buffer.from(req.recover2.version), oprf_blinded_input: Buffer.from(req.recover2.oprfBlindedInput) } });
   if (req.recover3) return cborEncode({ Recover3: { version: Buffer.from(req.recover3.version), unlock_key_tag: Buffer.from(req.recover3.unlockKeyTag) } });
+  if (req.register1) return cborEncode('Register1');
+  if (req.register2) return cborEncode({ Register2: {
+    version: Buffer.from(req.register2.version),
+    oprf_private_key: Buffer.from(req.register2.oprfPrivateKey),
+    oprf_signed_public_key: {
+      public_key: Buffer.from(req.register2.oprfPublicKey),
+      verifying_key: Buffer.from(req.register2.oprfVerifyingKey),
+    },
+    unlock_key_commitment: Buffer.from(req.register2.unlockKeyCommitment),
+    unlock_key_tag: Buffer.from(req.register2.unlockKeyTag),
+    encryption_key_scalar_share: Buffer.from(req.register2.encryptionKeyScalarShare),
+    encrypted_secret: Buffer.from(req.register2.encryptedSecret),
+    encrypted_secret_commitment: Buffer.from(req.register2.encryptedSecretCommitment),
+    policy: { num_guesses: req.register2.numGuesses },
+  } });
   throw new Error('Unknown request type');
 }
 
