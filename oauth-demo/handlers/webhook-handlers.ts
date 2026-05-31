@@ -7,6 +7,8 @@ import { CredentialsStorage, UserXChatStorage, ConversationKeyStorage } from "..
 import { EventBus } from "../event-bus";
 import { webhookDelayConfig } from "./webhook-config";
 import { __dirname } from "../esm-utils";
+import { unwrapConversationKey, secretboxDecrypt } from "../xchat/chat-crypto";
+import { decodeMessageEntryHolder, extractContentsFromMessageEvent } from "../xchat/chat-thrift";
 
 const webhookLogDir = path.join(__dirname(import.meta.url), "../data/webhooks");
 const credentialsStorage = new CredentialsStorage();
@@ -182,8 +184,8 @@ async function decryptXChatWebhook(body: any): Promise<any> {
   if (!xchat?.private_key) throw new Error('no private key for user');
 
   const keys = JSON.parse(xchat.private_key);
-  const { unwrapConversationKey, secretboxDecrypt } = await import('../xchat/chat-crypto');
-  const { decodeMessageEntryHolder, extractContentsFromMessageEvent } = await import('../xchat/chat-thrift');
+
+
 
   const conversationId = payload.conversation_id;
   let convKey: Buffer | null = null;
