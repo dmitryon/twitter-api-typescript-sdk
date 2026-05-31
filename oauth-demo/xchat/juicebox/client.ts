@@ -10,6 +10,7 @@ import { recoverScalar, recoverPoint, type ScalarShare, type PointShare } from '
 import { deriveUnlockKeyAndCommitment, deriveUnlockKeyTag, deriveEncryptionKey, decryptSecret, deriveEncryptedUserSecretCommitment } from './crypto.js';
 import { parseConfig, shareIndex, extractAuthTokens, type JuiceboxConfig } from './config.js';
 import { RealmClient } from './realm.js';
+import type { JuiceboxCallLoggerInterface } from '../../storage.js';
 
 
 export interface RecoverResult {
@@ -22,8 +23,9 @@ export interface RecoverResult {
  * @param pin - The user's PIN (UTF-8 encoded)
  * @param juiceboxConfigJson - JSON from GET /2/users/{id}/public_keys → juicebox_config
  * @param userId - The user ID (used as userInfo for Argon2 salt)
+ * @param logger - Optional logger for storing request details
  */
-export async function recover(pin: string, juiceboxConfigJson: string, userId: string): Promise<Uint8Array> {
+export async function recover(pin: string, juiceboxConfigJson: string, userId: string, logger?: JuiceboxCallLoggerInterface): Promise<Uint8Array> {
   const configRaw = JSON.parse(juiceboxConfigJson);
   const config = parseConfig(configRaw);
   const authTokens = extractAuthTokens(configRaw);
@@ -31,7 +33,7 @@ export async function recover(pin: string, juiceboxConfigJson: string, userId: s
   const realmClients = config.realms.map(r => {
     const realmIdHex = bytesToHex(r.id);
     const token = authTokens.get(realmIdHex) ?? '';
-    return new RealmClient(r, token);
+    return new RealmClient(r, token, logger);
   });
 
   console.log(`\x1b[2m${new Date().toISOString()}\x1b[0m \x1b[32mINFO\x1b[0m  \x1b[36m[juicebox]\x1b[0m starting recovery (${config.realms.length} realms, threshold=${config.recoverThreshold})`);

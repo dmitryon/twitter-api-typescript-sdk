@@ -10,6 +10,7 @@
 import { encode as cborEncode, decode as cborDecode } from 'cbor-x';
 import { noiseStart, noiseFinish, NoiseTransport } from './noise.js';
 import type { Realm } from './config.js';
+import type { JuiceboxCallLoggerInterface } from '../../storage.js';
 
 const JUICEBOX_VERSION = '0.3.4';
 
@@ -62,6 +63,13 @@ export interface SecretsResponse {
   };
 }
 
+interface PostCborResult {
+  status: number;
+  decoded: any;
+  startTime: number;
+  url: string;
+}
+
 export class RealmClient {
   private transport: NoiseTransport | null = null;
   private sessionId: number = 0;
@@ -69,6 +77,7 @@ export class RealmClient {
   constructor(
     private realm: Realm,
     private authToken: string,
+    private logger?: JuiceboxCallLoggerInterface,
   ) {}
 
   async makeRequest(req: SecretsRequest): Promise<SecretsResponse> {
@@ -78,27 +87,37 @@ export class RealmClient {
     return this.makeSoftwareRequest(req);
   }
 
-  private async makeSoftwareRequest(req: SecretsRequest): Promise<SecretsResponse> {
-    const body = marshalRequest(req);
+  private async postCbor(requestType: string, wireReq: any, extraHeaders: Record<string, string>, preEncoded?: any): Promise<PostCborResult> {
     const url = this.realm.address.replace(/\/$/, '') + '/req';
-    const reqType = req.recover1 ? 'Recover1' : req.recover2 ? 'Recover2' : 'Recover3';
-    jbLog('debug', `POST ${url} (${reqType}, ${body.length} bytes)`);
     const startTime = Date.now();
+    const body = cborEncode(wireReq);
 
     const resp = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/cbor',
-        'Authorization': `Bearer ${this.authToken}`,
-        'X-Juicebox-Version': JUICEBOX_VERSION,
-      },
-      body,
+      headers: { 'Content-Type': 'application/cbor', 'X-Juicebox-Version': JUICEBOX_VERSION, ...extraHeaders },
+      body: Buffer.from(body),
     });
 
-    if (!resp.ok) throw new Error(`realm HTTP ${resp.status}`);
-    const respBody = new Uint8Array(await resp.arrayBuffer());
-    jbLog('debug', `← ${resp.status} (${Date.now() - startTime}ms, ${respBody.length} bytes)`);
-    return cborDecode(respBody) as SecretsResponse;
+    if (!resp.ok) {
+      this.logRequest(startTime, url, requestType, resp.status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq) }, `realm HTTP ${resp.status}`);
+      throw new Error(`realm HTTP ${resp.status}`);
+    }
+
+    const respBytes = new Uint8Array(await resp.arrayBuffer());
+    const decoded = cborDecode(respBytes) as any;
+    jbLog('debug', `← ${resp.status} (${Date.now() - startTime}ms, ${respBytes.length} bytes)`);
+    return { status: resp.status, decoded, startTime, url };
+  }
+
+  private async makeSoftwareRequest(req: SecretsRequest): Promise<SecretsResponse> {
+    const body = marshalRequest(req);
+    const reqType = req.recover1 ? 'Recover1' : req.recover2 ? 'Recover2' : 'Recover3';
+    const preEncoded = cborDecode(body);
+    jbLog('debug', `POST ${this.realm.address}/req (${reqType}, ${body.length} bytes)`);
+
+    const { status, decoded, startTime, url } = await this.postCbor(reqType, preEncoded, { 'Authorization': `Bearer ${this.authToken}` }, preEncoded);
+    this.logRequest(startTime, url, reqType, status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(preEncoded), response_body: toJsonSafe(decoded), encoded_response: toJsonSafe(decoded) });
+    return decoded as SecretsResponse;
   }
 
   private async makeHardwareRequest(req: SecretsRequest): Promise<SecretsResponse> {
@@ -123,7 +142,7 @@ export class RealmClient {
     jbLog('debug', `establishing Noise session with ${this.realm.address}`);
     const { state, request } = noiseStart(this.realm.publicKey!, new Uint8Array(0));
     this.sessionId = Math.floor(Math.random() * 0xFFFFFFFF);
-    const clientReq = cborEncode({
+    const wireReq = {
       realm: Buffer.from(this.realm.id),
       auth_token: this.authToken,
       session_id: this.sessionId,
@@ -136,19 +155,24 @@ export class RealmClient {
           }
         }
       },
-    });
+    };
 
-    const url = this.realm.address.replace(/\/$/, '') + '/req';
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/cbor', 'X-Juicebox-Version': JUICEBOX_VERSION },
-      body: clientReq,
-    });
-    if (!resp.ok) throw new Error(`realm HTTP ${resp.status}`);
-    const clientResp = cborDecode(new Uint8Array(await resp.arrayBuffer())) as any;
-    if (typeof clientResp === 'string') throw new Error(clientResp);
-    if (clientResp.InvalidAuth) throw new Error('invalid auth');
-    if (!clientResp.Ok?.Handshake) throw new Error('handshake failed');
+    const { status, decoded: clientResp, startTime, url } = await this.postCbor('HandshakeOnly', wireReq, {});
+
+    if (typeof clientResp === 'string') {
+      this.logRequest(startTime, url, 'HandshakeOnly', status, { encoded_request: toJsonSafe(wireReq), encoded_response: clientResp }, clientResp);
+      throw new Error(clientResp);
+    }
+    if (clientResp.InvalidAuth) {
+      this.logRequest(startTime, url, 'HandshakeOnly', 401, { encoded_request: toJsonSafe(wireReq), encoded_response: toJsonSafe(clientResp) }, 'invalid auth');
+      throw new Error('invalid auth');
+    }
+    if (!clientResp.Ok?.Handshake) {
+      this.logRequest(startTime, url, 'HandshakeOnly', status, { encoded_request: toJsonSafe(wireReq), encoded_response: toJsonSafe(clientResp) }, 'handshake failed');
+      throw new Error('handshake failed');
+    }
+
+    this.logRequest(startTime, url, 'HandshakeOnly', status, { encoded_request: toJsonSafe(wireReq), encoded_response: toJsonSafe(clientResp) });
 
     const hs = clientResp.Ok.Handshake.handshake;
     const { transport } = noiseFinish(state, {
@@ -161,86 +185,133 @@ export class RealmClient {
 
   private async sendViaTransport(reqBytes: Uint8Array): Promise<SecretsResponse> {
     jbLog('debug', `POST ${this.realm.address} via transport (${reqBytes.length} bytes)`);
+    const preEncoded = cborDecode(reqBytes);
     const ciphertext = this.transport!.encrypt(reqBytes);
-    const clientReq = cborEncode({
+    const wireReq = {
       realm: Buffer.from(this.realm.id),
       auth_token: this.authToken,
       session_id: this.sessionId,
       kind: 'SecretsRequest',
       encrypted: { Transport: { ciphertext: Buffer.from(ciphertext) } },
-    });
+    };
 
-    const url = this.realm.address.replace(/\/$/, '') + '/req';
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/cbor', 'X-Juicebox-Version': JUICEBOX_VERSION },
-      body: clientReq,
-    });
-    if (!resp.ok) throw new Error(`realm HTTP ${resp.status}`);
-    const clientResp = cborDecode(new Uint8Array(await resp.arrayBuffer())) as any;
+    const { status, decoded: clientResp, startTime, url } = await this.postCbor('Transport', wireReq, {}, preEncoded);
 
     if (typeof clientResp === 'string' && clientResp === 'MissingSession') {
+      this.logRequest(startTime, url, 'Transport', status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq), encoded_response: clientResp }, 'MissingSession');
       this.transport = null;
-      return this.makeHardwareRequest({ recover1: true }); // will re-establish
+      return this.makeHardwareRequest({ recover1: true });
     }
-    if (clientResp.MissingSession) { this.transport = null; throw new Error('session lost'); }
-    if (!clientResp.Ok?.Transport) throw new Error('transport response missing');
+    if (clientResp.MissingSession) {
+      this.logRequest(startTime, url, 'Transport', status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq), encoded_response: toJsonSafe(clientResp) }, 'session lost');
+      this.transport = null;
+      throw new Error('session lost');
+    }
+    if (!clientResp.Ok?.Transport) {
+      this.logRequest(startTime, url, 'Transport', status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq), encoded_response: toJsonSafe(clientResp) }, 'transport response missing');
+      throw new Error('transport response missing');
+    }
 
     const plaintext = this.transport!.decrypt(clientResp.Ok.Transport.ciphertext);
     const padded = cborDecode(plaintext) as any;
     const innerBytes = padded.padded_bytes
       ? new Uint8Array(padded.padded_bytes).slice(0, padded.unpadded_length)
       : plaintext;
-    return cborDecode(innerBytes) as SecretsResponse;
+    const decoded = cborDecode(innerBytes) as SecretsResponse;
+    this.logRequest(startTime, url, 'Transport', status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq), response_body: toJsonSafe(decoded), encoded_response: toJsonSafe(clientResp) });
+    return decoded;
   }
 
   private async sendViaHandshake(reqBytes: Uint8Array): Promise<SecretsResponse> {
-      const { state, request } = noiseStart(this.realm.publicKey!, reqBytes);
-      this.sessionId = Math.floor(Math.random() * 0xFFFFFFFF);
-      const clientReq = cborEncode({
-        realm: Buffer.from(this.realm.id),
-        auth_token: this.authToken,
-        session_id: this.sessionId,
-        kind: 'SecretsRequest',
-        encrypted: {
-          Handshake: {
-            handshake: {
-              client_ephemeral_public: Buffer.from(request.clientEphemeralPublic),
-              payload_ciphertext: Buffer.from(request.payloadCiphertext),
-            }
+    const preEncoded = cborDecode(reqBytes);
+    const { state, request } = noiseStart(this.realm.publicKey!, reqBytes);
+    this.sessionId = Math.floor(Math.random() * 0xFFFFFFFF);
+    const wireReq = {
+      realm: Buffer.from(this.realm.id),
+      auth_token: this.authToken,
+      session_id: this.sessionId,
+      kind: 'SecretsRequest',
+      encrypted: {
+        Handshake: {
+          handshake: {
+            client_ephemeral_public: Buffer.from(request.clientEphemeralPublic),
+            payload_ciphertext: Buffer.from(request.payloadCiphertext),
           }
-        },
-      });
+        }
+      },
+    };
 
-      const url = this.realm.address.replace(/\/$/, '') + '/req';
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/cbor', 'X-Juicebox-Version': JUICEBOX_VERSION },
-        body: clientReq,
-      });
+    const { status, decoded: clientResp, startTime, url } = await this.postCbor('Handshake', wireReq, {}, preEncoded);
 
-      if (!resp.ok) throw new Error(`realm HTTP ${resp.status}`);
-      const clientResp = cborDecode(new Uint8Array(await resp.arrayBuffer())) as any;
+    // Handle error variants (string or map)
+    if (typeof clientResp === 'string') {
+      this.logRequest(startTime, url, 'Handshake', status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq), encoded_response: clientResp }, clientResp);
+      throw new Error(clientResp);
+    }
+    if (clientResp.InvalidAuth) {
+      this.logRequest(startTime, url, 'Handshake', 401, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq), encoded_response: toJsonSafe(clientResp) }, 'invalid auth');
+      throw new Error('invalid auth');
+    }
+    if (clientResp.Unavailable) {
+      this.logRequest(startTime, url, 'Handshake', status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq), encoded_response: toJsonSafe(clientResp) }, 'unavailable');
+      throw new Error('unavailable');
+    }
+    if (clientResp.MissingSession) {
+      this.logRequest(startTime, url, 'Handshake', status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq), encoded_response: toJsonSafe(clientResp) }, 'missing session');
+      throw new Error('missing session');
+    }
+    if (!clientResp.Ok?.Handshake) {
+      this.logRequest(startTime, url, 'Handshake', status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq), encoded_response: toJsonSafe(clientResp) }, 'handshake failed');
+      throw new Error('handshake failed: ' + JSON.stringify(clientResp));
+    }
 
-      // Handle error variants (string or map)
-      if (typeof clientResp === 'string') throw new Error(clientResp);
-      if (clientResp.InvalidAuth) throw new Error('invalid auth');
-      if (clientResp.Unavailable) throw new Error('unavailable');
-      if (clientResp.MissingSession) throw new Error('missing session');
-      if (!clientResp.Ok?.Handshake) throw new Error('handshake failed: ' + JSON.stringify(clientResp));
+    const hs = clientResp.Ok.Handshake.handshake;
+    const { transport, payload } = noiseFinish(state, {
+      serverEphemeralPublic: hs.server_ephemeral_public,
+      payloadCiphertext: hs.payload_ciphertext,
+    });
+    this.transport = transport;
 
-      const hs = clientResp.Ok.Handshake.handshake;
-      const { transport, payload } = noiseFinish(state, {
-        serverEphemeralPublic: hs.server_ephemeral_public,
-        payloadCiphertext: hs.payload_ciphertext,
-      });
-      this.transport = transport;
-
-      // Payload is a PaddedSecretsResponse: { unpadded_length, padded_bytes }
-      const padded = cborDecode(payload) as any;
-      const innerBytes = padded.padded_bytes
-        ? new Uint8Array(padded.padded_bytes).slice(0, padded.unpadded_length)
-        : payload;
-      return cborDecode(innerBytes) as SecretsResponse;
+    // Payload is a PaddedSecretsResponse: { unpadded_length, padded_bytes }
+    const padded = cborDecode(payload) as any;
+    const innerBytes = padded.padded_bytes
+      ? new Uint8Array(padded.padded_bytes).slice(0, padded.unpadded_length)
+      : payload;
+    const decoded = cborDecode(innerBytes) as SecretsResponse;
+    this.logRequest(startTime, url, 'Handshake', status, { request_body: toJsonSafe(preEncoded), encoded_request: toJsonSafe(wireReq), response_body: toJsonSafe(decoded), encoded_response: toJsonSafe(clientResp) });
+    return decoded;
   }
+
+  private logRequest(startTime: number, url: string, requestType: string, status: number, data?: { request_body?: any; encoded_request?: any; response_body?: any; encoded_response?: any } | any, error?: string) {
+    if (!this.logger) return;
+    try {
+      const isStructured = data && typeof data === 'object' && ('request_body' in data || 'encoded_request' in data || 'encoded_response' in data);
+      this.logger.log({
+        timestamp: new Date(startTime).toISOString(),
+        method: 'POST',
+        url,
+        endpoint: new URL(url).pathname,
+        request_type: requestType,
+        request_body: isStructured ? data.request_body : undefined,
+        encoded_request: isStructured ? data.encoded_request : undefined,
+        status,
+        response_body: isStructured ? data.response_body : data,
+        encoded_response: isStructured ? data.encoded_response : undefined,
+        duration_ms: Date.now() - startTime,
+        error,
+      });
+    } catch {}
+  }
+}
+
+function toJsonSafe(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+  if (obj instanceof Uint8Array || Buffer.isBuffer(obj)) return Buffer.from(obj).toString('base64');
+  if (Array.isArray(obj)) return obj.map(toJsonSafe);
+  if (typeof obj === 'object') {
+    const out: any = {};
+    for (const [k, v] of Object.entries(obj)) out[k] = toJsonSafe(v);
+    return out;
+  }
+  return obj;
 }
