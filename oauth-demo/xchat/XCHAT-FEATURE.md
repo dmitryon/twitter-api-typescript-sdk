@@ -376,6 +376,10 @@ Browser -> User: 🔐 chat.received [encrypted payload]\nin 📨 Events modal
 | 16 | User lookup + avatars in UI | ✅ Done |
 | 17 | Signature version "7" (Go bridge fix) | ✅ Done |
 | — | Enrollment detection + registration UI flow | 🔲 Next |
+| — | Send reactions (add/remove emoji to messages) | 🔲 Next |
+| — | Edit messages | 🔲 Next |
+| — | Delete messages (for self / for all) | 🔲 Next |
+| — | Typing indicators | 🔲 Next |
 | — | Media download (API returns 403) | ❌ Blocked — requires whitelisting from X |
 | — | New conversation key exchange (API returns 404) | ❌ Blocked — endpoint not implemented |
 

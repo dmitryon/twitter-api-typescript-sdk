@@ -15,6 +15,7 @@ import {
   encodeMessageCreateEvent,
   encodeMessageEventSignature,
   decodeMessageEntryHolder,
+  type ReplyTo,
 } from './chat-thrift.js';
 
 export type { DecodedMessageContents, DecodedMessageEntryContents, DecodedEntity, DecodedAttachment, DecodedReaction, DecodedEdit, DecodedReplyPreview } from './chat-thrift.js';
@@ -209,11 +210,12 @@ export async function encryptMessage(
   conversationId: string,
   keyVersion: string,
   signingKeyVersion: string,
+  replyTo?: ReplyTo,
 ): Promise<EncryptMessageResult> {
   const keys: SigningKeyPair = JSON.parse(keysJson);
 
   // 1. Encode plaintext → thrift
-  const plaintext = encodePlaintextPayload(text);
+  const plaintext = encodePlaintextPayload(text, replyTo);
 
   // 2. Decrypt conversation key, encrypt with secretbox
   const convKey = unwrapConversationKey(encryptedConvKeyB64, keys.decryptKeyB64);

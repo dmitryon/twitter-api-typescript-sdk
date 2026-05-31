@@ -601,3 +601,92 @@ Deleting a webhook via `DELETE /2/webhooks/{id}` does **not** automatically dele
 **Quirk**: This is server-side behavior — subscriptions must be explicitly deleted before or after removing the webhook. The orphaned subscriptions appear non-functional (no events are delivered) but clutter the subscription list.
 
 
+
+
+## Sending Reactions, Edits, Deletes, and Typing Indicators
+
+### Reactions (Add/Remove)
+
+Reactions use the **same `sendChatMessage` endpoint** as regular messages. The difference is in the encrypted payload — instead of `MessageContents` in the `MessageEntryContents`, it contains `reaction_add` or `reaction_remove`:
+
+```
+MessageEntryHolder {
+  contents: MessageEntryContents {
+    reaction_add: {                    // field 2 (or reaction_remove: field 3)
+      message_sequence_id: string      // target message's sequence ID
+      emoji: string                    // e.g. "👍", "🐳"
+    }
+  }
+}
+```
+
+This is encrypted with secretbox using the conversation key, wrapped in `MessageCreateEvent`, signed, and sent via `POST /2/chat/conversations/{id}/messages` — identical flow to sending a text message.
+
+**No special API endpoint for reactions** — they're just encrypted events sent as messages.
+
+### Message Edits
+
+Same pattern as reactions — the encrypted payload contains `message_edit` instead of `message`:
+
+```
+MessageEntryHolder {
+  contents: MessageEntryContents {
+    message_edit: {                    // field 4
+      message_sequence_id: string      // target message's sequence ID
+      updated_text: string             // new text
+      entities: list<RichTextEntity>   // updated entities (optional)
+    }
+  }
+}
+```
+
+Sent via the same `sendChatMessage` endpoint with the same encryption + signing flow.
+
+### Message Deletion
+
+Deletion uses a **different endpoint** — `DeleteMessageMutation` (GraphQL). There is NO REST API endpoint for message deletion.
+
+- GraphQL URL: `POST https://api.x.com/graphql/4gsDQKEmYkOtvsSIpHXdQA/DeleteMessageMutation`
+- May work with OAuth2 tokens (untested) or may require web session cookies
+
+It requires:
+
+1. `conversation_id` — the conversation
+2. `sequence_ids` — list of message sequence IDs to delete
+3. `delete_message_action` — `"ForSelf"` or `"ForAll"`
+4. `action_signatures` — signed delete events (signature version "4", not "7")
+
+**Signature preimage for delete (version "4"):**
+```
+"MessageDeleteEvent,{message_id},{sender_id},{conversation_id},{conversation_token},{created_at_msec},{encoded_message_event_detail}"
+```
+
+Where `encoded_message_event_detail` is base64 of thrift-encoded `MessageEventDetail { MessageDeleteEvent { sequence_ids, delete_message_action } }`.
+
+**Delete types:**
+- `DeleteForSelf` (action=1) — only removes from your view
+- `DeleteForAll` (action=2) — removes for all participants (only works for your own messages)
+
+### Typing Indicators
+
+Typing uses the REST API endpoint directly — **no encryption needed**:
+
+```
+POST /2/chat/conversations/{id}/typing
+```
+
+This is already in our generated client as `sendChatTypingIndicator`. No request body needed — just the conversation ID in the path.
+
+The Go bridge uses a GraphQL mutation (`HL96-xZ3Y81IEzAdczDokg/SendTypingNotification`) but the REST API endpoint works the same way.
+
+### Implementation Summary
+
+| Operation | Endpoint | Encrypted Payload | Signature Version |
+|-----------|----------|-------------------|-------------------|
+| Send message | `POST /messages` | `MessageEntryContents.message` | "7" |
+| Send reply | `POST /messages` | `MessageEntryContents.message` + `replying_to_preview` | "7" |
+| Add reaction | `POST /messages` | `MessageEntryContents.reaction_add` | "7" |
+| Remove reaction | `POST /messages` | `MessageEntryContents.reaction_remove` | "7" |
+| Edit message | `POST /messages` | `MessageEntryContents.message_edit` | "7" |
+| Delete message | GraphQL `DeleteMessageMutation` | Thrift `MessageDeleteEvent` (not secretbox) | "4" |
+| Typing indicator | `POST /typing` | None | None |

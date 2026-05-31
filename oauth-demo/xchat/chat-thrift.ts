@@ -19,9 +19,27 @@ import {
 // Encoding
 // ---------------------------------------------------------------------------
 
-export function encodePlaintextPayload(text: string): Buffer {
+export interface ReplyTo {
+  sender_id: number;
+  message_text: string;
+  sender_display_name?: string;
+  replying_to_message_sequence_id: string;
+  replying_to_message_id?: string;
+}
+
+export function encodePlaintextPayload(text: string, replyTo?: ReplyTo): Buffer {
+  const message: any = { message_text: text, sent_from: 1 };
+  if (replyTo) {
+    message.replying_to_preview = {
+      sender_id: replyTo.sender_id,
+      message_text: replyTo.message_text,
+      sender_display_name: replyTo.sender_display_name,
+      replying_to_message_sequence_id: replyTo.replying_to_message_sequence_id,
+      replying_to_message_id: replyTo.replying_to_message_id,
+    };
+  }
   return encode(
-    { contents: { message: { message_text: text, sent_from: 1 } } },
+    { contents: { message } },
     MessageEntryHolderSchema,
   );
 }
