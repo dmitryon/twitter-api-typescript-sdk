@@ -529,7 +529,7 @@ Reactions are **NOT embedded in the message payload** — neither in the encrypt
 
 ### Multiple Reactions Per User
 
-The X Chat protocol allows sending **multiple reaction_add events** for the same message from the same user. The server accepts them all with 200 OK. However, the X app UI only displays **one reaction per user per message** (the latest one). Our aggregation doesn't deduplicate — if a user reacts with 👍 then 🔥, both appear. The X app likely deduplicates in its local SQLite DB (keeping only the most recent per user+message).
+The X Chat protocol allows sending **multiple reactions** to the same message from the same user (different emojis). This is intentional — the X app UI also supports this. A user can react with 👍, 🔥, and 😂 to the same message simultaneously.
 
 ### Reaction Event Format
 ```
