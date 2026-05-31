@@ -290,7 +290,7 @@ Docs: https://docs.x.com/x-api/webhooks/introduction
 
 ### Signature Version in Webhooks
 
-Webhook `message_event_signature.signature_version` is `"7"` (not `"3"` as used for sending). This may indicate a different preimage format for verification.
+Webhook `message_event_signature.signature_version` is `"7"` — the same version used for sending. The preimage format is identical to version "3" (`MessageCreateEvent,{msg_id},{sender_id},{conv_id},{key_version},{b64_nopad}`). Only the `signature_version` field value differs.
 
 ## Public Keys API Behavior
 
