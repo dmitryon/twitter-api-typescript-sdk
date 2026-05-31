@@ -681,6 +681,33 @@ POST /2/chat/conversations/{id}/typing
 
 **Status (tested 2026-05-31):** Returns **403 "client-not-enrolled"** — same issue as media download. The endpoint exists in the OpenAPI spec but is not available for our access level.
 
+### Reply-To Requires Embedding Original Message Text
+
+Unlike non-encrypted DMs (where you send `parent_id` and the server resolves the referenced message), X Chat replies require the **full original message text** to be embedded in the encrypted payload as `replying_to_preview`.
+
+**Why:** The server cannot read encrypted messages, so it cannot resolve a parent message ID into displayable text for the recipient. The sender must include the preview.
+
+**Implications for bot/API implementations:**
+- You cannot reply to a message you haven't already decrypted
+- There is no `GET /events/{message_id}` endpoint — to find a specific message, you must paginate through `GET /events` until you find it
+- The UI approach (pass the already-displayed text from the frontend) avoids extra API calls
+- If building a headless bot that receives a webhook and wants to reply, it must decrypt the incoming message first, then embed that text in the reply
+
+**Contrast with non-encrypted DMs:**
+```
+// Non-encrypted: just send parent_id, server resolves the rest
+POST /2/dm_conversations/{id}/messages { text, reply: { in_reply_to_message_id } }
+
+// Encrypted: must embed the full preview in the encrypted payload
+MessageContents {
+  message_text: "my reply",
+  replying_to_preview: {
+    sender_id, message_text, sender_display_name,
+    replying_to_message_sequence_id, replying_to_message_id
+  }
+}
+```
+
 ### Implementation Summary
 
 | Operation | Endpoint | Encrypted Payload | Signature Version |
