@@ -1,7 +1,8 @@
 import fs from "fs/promises";
 import path from "path";
+import { __dirname } from "./esm-utils";
 
-const DATA_DIR = path.join(__dirname, "data");
+const DATA_DIR = path.join(__dirname(import.meta.url), "data");
 const INTEGRATIONS_DIR = path.join(DATA_DIR, "integrations");
 const ACCESS_TOKENS_DIR = path.join(DATA_DIR, "access-tokens");
 

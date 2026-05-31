@@ -3059,19 +3059,6 @@ ts-node@^10.8.2, ts-node@>=9.0.0:
     v8-compile-cache-lib "^3.0.1"
     yn "3.1.1"
 
-"twitter-api-sdk@file:":
-  version "2.148.0"
-  resolved "file:"
-  dependencies:
-    "@types/form-data" "^2.5.2"
-    abort-controller "^3.0.0"
-    dotenv "^16.5.0"
-    express "^5.1.0"
-    form-data "^4.0.4"
-    node-fetch "^2.6.1"
-    twitter-api-sdk "file:"
-    yarn "^1.22.22"
-
 type-detect@4.0.8:
   version "4.0.8"
   resolved "https://registry.npmjs.org/type-detect/-/type-detect-4.0.8.tgz"
@@ -3098,10 +3085,10 @@ typedarray-to-buffer@^3.1.5:
   dependencies:
     is-typedarray "^1.0.0"
 
-typescript@^4.4.4, typescript@>=2.7, "typescript@>=3.8 <5.0":
-  version "4.9.5"
-  resolved "https://registry.npmjs.org/typescript/-/typescript-4.9.5.tgz"
-  integrity sha512-1FXk9E2Hm+QzZQ7z+McJiHL4NW1F2EzMu9Nq9i3zAaGqibafqYwCVU6WyWAuyQRRzOlxou8xZSyXLEN8oKj24g==
+typescript@^6.0.3, typescript@>=2.7, "typescript@>=3.8 <5.0":
+  version "6.0.3"
+  resolved "https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz"
+  integrity sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==
 
 undici-types@~6.21.0:
   version "6.21.0"
