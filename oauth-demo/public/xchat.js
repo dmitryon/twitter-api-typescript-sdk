@@ -329,7 +329,7 @@ window.XChatUI = (() => {
             return `<div class="xchat-attachment xchat-file-attachment">📎 <strong>${name}</strong> <span class="xchat-file-meta">${a.type || 'file'}${dimStr}${sizeStr}</span> ${downloadBtn}</div>`;
           }).join('') : '';
           // Reactions display
-          const reactionsHtml = m.reactions?.length ? `<div class="xchat-reactions">${m.reactions.map(r => `<span class="xchat-reaction" title="${r.sender_id} (click to remove)" onclick="XChatUI.sendReaction('${m.id}', '${r.emoji}', true)">${r.emoji}</span>`).join('')}</div>` : '';
+          const reactionsHtml = m.reactions?.length ? `<div class="xchat-reactions">${m.reactions.map(r => { const u = userCache[r.sender_id]; const name = u ? `@${u.username}` : r.sender_id; const isOwn = r.sender_id === state.userId; return `<span class="xchat-reaction${isOwn ? ' xchat-reaction-own' : ''}" title="${name}${isOwn ? ' (click to remove)' : ''}" onclick="XChatUI.sendReaction('${m.id}', '${r.emoji}', true)"><span class="xchat-reaction-emoji">${r.emoji}</span>${u?.profile_image_url ? `<img src="/media/proxy/public?url=${encodeURIComponent(u.profile_image_url)}" class="xchat-reaction-avatar" onerror="this.style.display='none'">` : ''}</span>`; }).join('')}</div>` : '';
           const editedTag = m.edited ? '<span class="xchat-edited">(edited)</span>' : '';
           return `
             <div class="xchat-message ${isSelf ? 'xchat-msg-self' : ''}" data-msg-id="${m.id}">
