@@ -17,7 +17,7 @@ import {
   decodeMessageEntryHolder,
 } from './chat-thrift.js';
 
-export type { DecodedMessageContents, DecodedMessageEntryContents, DecodedEntity, DecodedAttachment } from './chat-thrift.js';
+export type { DecodedMessageContents, DecodedMessageEntryContents, DecodedEntity, DecodedAttachment, DecodedReaction, DecodedEdit, DecodedReplyPreview } from './chat-thrift.js';
 export { decodeMessageEntryHolder } from './chat-thrift.js';
 
 // ---------------------------------------------------------------------------

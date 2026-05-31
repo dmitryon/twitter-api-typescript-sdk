@@ -47,7 +47,7 @@ export function encodeMessageEventSignature(
   return encode({
     signature: signatureB64,
     public_key_version: publicKeyVersion,
-    signature_version: '3',
+    signature_version: '7',
     signing_public_key: signingPublicKeySPKI,
   }, MessageEventSignatureSchema);
 }
@@ -74,35 +74,79 @@ export interface DecodedAttachment {
   display_url?: string;
 }
 
+export interface DecodedReplyPreview {
+  sender_id?: number;
+  message_text?: string;
+  sender_display_name?: string;
+  replying_to_message_sequence_id?: string;
+  replying_to_message_id?: string;
+}
+
 export interface DecodedMessageContents {
   text?: string;
   entities?: DecodedEntity[];
   attachments?: DecodedAttachment[];
+  reply_to?: DecodedReplyPreview;
+}
+
+export interface DecodedReaction {
+  message_sequence_id: string;
+  emoji: string;
+  action: 'add' | 'remove';
+}
+
+export interface DecodedEdit {
+  message_sequence_id: string;
+  updated_text: string;
+  entities?: DecodedEntity[];
 }
 
 export interface DecodedMessageEntryContents {
   message?: DecodedMessageContents;
+  reaction?: DecodedReaction;
+  edit?: DecodedEdit;
 }
 
 export function decodeMessageEntryHolder(buf: Buffer): DecodedMessageEntryContents | null {
   try {
     const holder = decode(buf, MessageEntryHolderSchema);
-    const msg = holder.contents?.message;
-    if (!msg) return holder.contents ? { message: undefined } : null;
+    const contents = holder.contents;
+    if (!contents) return null;
+
+    // Reaction add
+    if (contents.reaction_add) {
+      return { reaction: { message_sequence_id: contents.reaction_add.message_sequence_id, emoji: contents.reaction_add.emoji, action: 'add' } };
+    }
+
+    // Reaction remove
+    if (contents.reaction_remove) {
+      return { reaction: { message_sequence_id: contents.reaction_remove.message_sequence_id, emoji: contents.reaction_remove.emoji, action: 'remove' } };
+    }
+
+    // Message edit
+    if (contents.message_edit) {
+      const edit: DecodedEdit = { message_sequence_id: contents.message_edit.message_sequence_id, updated_text: contents.message_edit.updated_text };
+      if (contents.message_edit.entities?.length) {
+        edit.entities = contents.message_edit.entities.map(mapEntity);
+      }
+      return { edit };
+    }
+
+    // Regular message
+    const msg = contents.message;
+    if (!msg) return {};
 
     const result: DecodedMessageContents = { text: msg.message_text };
+    if (msg.entities?.length) result.entities = msg.entities.map(mapEntity);
 
-    if (msg.entities?.length) {
-      result.entities = msg.entities.map((e: any) => ({
-        start_index: e.start_index,
-        end_index: e.end_index,
-        type: e.content?.hashtag !== undefined ? 'hashtag'
-            : e.content?.cashtag !== undefined ? 'cashtag'
-            : e.content?.mention !== undefined ? 'mention'
-            : e.content?.url !== undefined ? 'url'
-            : e.content?.email !== undefined ? 'email'
-            : 'unknown',
-      }));
+    if (msg.replying_to_preview) {
+      result.reply_to = {
+        sender_id: msg.replying_to_preview.sender_id,
+        message_text: msg.replying_to_preview.message_text,
+        sender_display_name: msg.replying_to_preview.sender_display_name,
+        replying_to_message_sequence_id: msg.replying_to_preview.replying_to_message_sequence_id,
+        replying_to_message_id: msg.replying_to_preview.replying_to_message_id,
+      };
     }
 
     if (msg.attachments?.length) {
@@ -129,6 +173,19 @@ export function decodeMessageEntryHolder(buf: Buffer): DecodedMessageEntryConten
   } catch {
     return null;
   }
+}
+
+function mapEntity(e: any): DecodedEntity {
+  return {
+    start_index: e.start_index,
+    end_index: e.end_index,
+    type: e.content?.hashtag !== undefined ? 'hashtag'
+        : e.content?.cashtag !== undefined ? 'cashtag'
+        : e.content?.mention !== undefined ? 'mention'
+        : e.content?.url !== undefined ? 'url'
+        : e.content?.email !== undefined ? 'email'
+        : 'unknown',
+  };
 }
 
 /**

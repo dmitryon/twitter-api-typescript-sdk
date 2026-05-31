@@ -404,6 +404,129 @@ npm install @noble/curves @noble/hashes @noble/ciphers hash-wasm cbor-x
 (`@noble/curves` and `@noble/hashes` may already be installed from the previous chat-crypto.ts)
 
 
+## Juicebox Key Registration (Not Yet Implemented)
+
+### Overview
+
+Key registration is the process of generating new P-256 key pairs and storing the private key material in Juicebox realms, protected by the user's PIN. This is required for:
+- Setting up encryption for a new X Chat user
+- Changing/resetting a PIN
+- Rotating keys
+
+Currently only key **recovery** is implemented. Registration requires the inverse flow.
+
+### Registration Flow (from HAR capture)
+
+```
+1. Client generates P-256 key pairs (signing + decrypt)
+2. Client calls AddXChatPublicKeyMutation (GraphQL)
+3. Server returns Juicebox token_map with fresh auth tokens
+4. Client registers secret with all 3 Juicebox realms
+5. Keys are now recoverable with PIN
+```
+
+### Step 1: Generate Key Pairs
+
+```typescript
+// Generate two P-256 ECDSA key pairs
+const decryptKey = crypto.createECDH('prime256v1').generateKeys();
+const signingKey = crypto.createECDH('prime256v1').generateKeys();
+
+// The 64-byte secret to store in Juicebox:
+// bytes[0:32] = decrypt key private scalar
+// bytes[32:64] = signing key private scalar
+const secret = Buffer.concat([decryptKey.getPrivateKey(), signingKey.getPrivateKey()]);
+```
+
+### Step 2: AddXChatPublicKeyMutation
+
+```graphql
+mutation AddXChatPublicKeyMutation($variables: String!) {
+  user_add_public_key(variables: $variables) {
+    __typename
+    token_map { ... }
+    version
+  }
+}
+```
+
+Variables (JSON-encoded string):
+```json
+{
+  "version": "<timestamp_ms>",
+  "generate_version": true,
+  "public_key": {
+    "public_key": "<SPKI base64 of decrypt key>",
+    "signing_public_key": "<SPKI base64 of signing key>",
+    "identity_public_key_signature": "<base64 signature>",
+    "registration_method": "CustomPin"
+  }
+}
+```
+
+Response includes `token_map` with auth tokens for all 3 realms (same format as recovery).
+
+### Step 3: Register with Juicebox Realms
+
+All 3 realms must be registered (`register_threshold: 3`).
+
+#### Software Realm (realm-b.x.com)
+
+Direct CBOR over HTTP (no Noise handshake):
+
+**Phase 1:**
+- Request: CBOR string `"Register1"`
+- Response: `{"Register1": "Ok"}`
+
+**Phase 2:**
+- Request: CBOR `"Register2"` with struct:
+  ```
+  {
+    version: <realm_state_version>,
+    oprf_private_key: <32 bytes>,
+    oprf_signed_public_key: {
+      public_key: <32 bytes>,
+      verifying_key: <32 bytes>
+    },
+    unlock_key_commitment: <32 bytes>,
+    unlock_key_tag: <16 bytes>,
+    encryption_key_scalar_share: <32 bytes>,
+    encrypted_secret: <encrypted>,
+    encrypted_secret_commitment: <32 bytes>,
+    num_guesses: <max_guess_count>,
+    policy: { num_guesses: <max_guess_count> }
+  }
+  ```
+- Response: `{"Register2": "Ok"}`
+
+#### Hardware Realms (realm-east1.x.com, realm-west1.x.com)
+
+Noise NK handshake + Transport (same as recovery):
+
+**Phase 1:** Noise NK handshake with `Register1` piggybacked
+**Phase 2:** Transport-encrypted `Register2` payload (same struct as software realm)
+
+### Crypto Operations for Registration
+
+1. **Argon2id** the PIN (same as recovery: `Standard2019` mode)
+2. **OPRF key generation**: Generate random Ristretto255 scalar as `oprf_private_key`, derive `public_key` = scalar × basepoint
+3. **Shamir secret sharing**: Split the 64-byte secret into 3 shares (one per realm)
+4. **Encryption**: For each realm, derive `unlock_key` from OPRF output, encrypt the secret share
+5. **Commitments**: Compute commitment hashes for verification
+
+### Implementation Plan
+
+| Step | Description | File | Dependencies |
+|------|-------------|------|--------------|
+| 1 | Add `register()` to Juicebox client | `juicebox/client.ts` | All existing modules |
+| 2 | Add OPRF key generation (inverse of blind/finalize) | `juicebox/oprf.ts` | @noble/curves |
+| 3 | Add Shamir secret splitting (inverse of interpolation) | `juicebox/shamir.ts` | @noble/curves |
+| 4 | Add encryption (inverse of decryption in crypto.ts) | `juicebox/crypto.ts` | @noble/hashes, @noble/ciphers |
+| 5 | Add `Register1`/`Register2` CBOR serialization | `juicebox/realm.ts` | cbor-x |
+| 6 | Add `AddXChatPublicKeyMutation` GraphQL call | `handlers/xchat-handlers.ts` | — |
+| 7 | Wire into UI (generate keys + register flow) | `public/xchat.js` | — |
+
+
 ## File/Directory Layout
 
 All X Chat code lives in `oauth-demo/` (not a dedicated `xchat/` subdirectory):

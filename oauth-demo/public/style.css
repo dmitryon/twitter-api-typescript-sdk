@@ -733,6 +733,13 @@ div.xchat-media-broken { border: 1px dashed #666; padding: 12px; border-radius: 
 .xchat-conv-avatar { width: 36px; height: 36px; border-radius: 50%; }
 .xchat-username { color: #888; font-weight: normal; font-size: 0.85em; }
 .xchat-msg-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.xchat-load-more { display: block; margin: 8px auto; opacity: 0.7; }
+.xchat-msg-event { font-size: 0.85em; color: #999; padding: 4px 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.xchat-reactions { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+.xchat-reaction { background: #2a2a2a; border: 1px solid #444; border-radius: 12px; padding: 2px 6px; font-size: 0.9em; cursor: default; }
+.xchat-edited { font-size: 0.75em; color: #777; font-style: italic; }
+.xchat-reply-preview { border-left: 3px solid #555; padding: 4px 8px; margin-bottom: 4px; font-size: 0.85em; color: #aaa; background: #1a1a1a; border-radius: 4px; }
+.xchat-reply-sender { font-weight: bold; color: #ccc; }
 .xchat-entity-hashtag { color: #1d9bf0; font-weight: 500; }
 .xchat-entity-mention { color: #1d9bf0; font-weight: 500; }
 .xchat-entity-cashtag { color: #00ba7c; font-weight: 500; }

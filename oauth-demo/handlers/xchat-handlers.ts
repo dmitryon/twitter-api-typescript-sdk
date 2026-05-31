@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { resolveAuth, mediaCache, sseResponse, integrationStorage, accessTokenStorage } from "./handler-utils";
 import { rest } from "twitter-api-sdk";
-import { UserPublicKeyStorage, ConversationKeyStorage, UserXChatStorage } from "../storage";
+import { UserPublicKeyStorage, ConversationKeyStorage, UserXChatStorage, JuiceboxCallLogger } from "../storage";
 import { log } from "../logger";
 import { toCanonicalConvId, toApiConvId, extractRecipientId } from "../xchat/xchat-utils";
 import crypto from "crypto";
@@ -9,9 +9,10 @@ import crypto from "crypto";
 const userPublicKeyStorage = new UserPublicKeyStorage();
 const conversationKeyStorage = new ConversationKeyStorage();
 const userXChatStorage = new UserXChatStorage();
+const juiceboxLogger = new JuiceboxCallLogger();
 
 // Ensure storage directories exist
-Promise.all([userPublicKeyStorage.init(), conversationKeyStorage.init(), userXChatStorage.init()]).catch(() => {});
+Promise.all([userPublicKeyStorage.init(), conversationKeyStorage.init(), userXChatStorage.init(), juiceboxLogger.init()]).catch(() => {});
 
 /** Resolve the OAuth2 user ID for an integration. */
 async function resolveUserId(integrationId: string): Promise<string | null> {
@@ -48,7 +49,7 @@ export const getXChatConversations = async (req: Request, res: Response) => {
 export const getXChatMessages = async (req: Request, res: Response) => {
   try {
     const { id, conversationId } = req.params;
-    const { auth: authType } = req.query;
+    const { auth: authType, pagination_token } = req.query;
 
     const resolved = await resolveAuth(id, authType as string);
     if (!resolved) {
@@ -56,11 +57,168 @@ export const getXChatMessages = async (req: Request, res: Response) => {
       return;
     }
 
-    // Load messages from webhook data (no REST API for message history)
     const canonicalId = toCanonicalConvId(conversationId);
     const apiConvId = toApiConvId(conversationId);
-    log.debug('xchat', `getXChatMessages: loading from webhooks for ${canonicalId}`);
 
+    // Resolve user ID and keys for decryption
+    const userId = await resolveUserId(id);
+    const xchat = userId ? await userXChatStorage.load(userId) : null;
+    const keys = xchat?.private_key ? JSON.parse(xchat.private_key) : null;
+
+    // Get conversation key
+    let convKey: Buffer | null = null;
+    if (keys?.decryptKeyB64) {
+      const cached = await conversationKeyStorage.load(canonicalId);
+      if (cached?.encrypted_conversation_key) {
+        try {
+          const { unwrapConversationKey } = await import('../xchat/chat-crypto.js');
+          convKey = unwrapConversationKey(cached.encrypted_conversation_key, keys.decryptKeyB64);
+        } catch {}
+      }
+    }
+
+    // Fetch events from API
+    log.debug('xchat', `getXChatMessages: fetching events from API for ${apiConvId}`);
+    try {
+      const eventsResp = await resolved.client.chat.getChatConversationEvents(apiConvId, {
+        max_results: 100,
+        ...(pagination_token ? { pagination_token: pagination_token as string } : {}),
+      });
+
+      // Extract conversation key from response metadata if not already cached
+      if (!convKey && keys?.decryptKeyB64 && (eventsResp as any).meta?.conversation_key_events?.length) {
+        const { unwrapConversationKey } = await import('../xchat/chat-crypto.js');
+        for (const keyEventB64 of (eventsResp as any).meta.conversation_key_events) {
+          try {
+            const keyBuf = Buffer.from(keyEventB64, 'base64');
+            // Search for our userId as a thrift string, then read encrypted_conversation_key
+            let searchPos = 0;
+            while (true) {
+              const idx = keyBuf.indexOf(userId!, searchPos);
+              if (idx === -1) break;
+              if (idx >= 4 && keyBuf.readInt32BE(idx - 4) === userId!.length) {
+                const pos = idx + userId!.length;
+                if (pos < keyBuf.length - 7 && keyBuf[pos] === 11 && keyBuf.readInt16BE(pos + 1) === 2) {
+                  const len = keyBuf.readInt32BE(pos + 3);
+                  const encKey = keyBuf.subarray(pos + 7, pos + 7 + len).toString('utf8');
+                  convKey = unwrapConversationKey(encKey, keys.decryptKeyB64);
+                  // Cache it
+                  await conversationKeyStorage.save({ id: canonicalId, encrypted_conversation_key: encKey, key_version: '', cached_at: new Date().toISOString() });
+                  log.debug('xchat', `getXChatMessages: extracted conversation key from API response`);
+                  break;
+                }
+              }
+              searchPos = idx + 1;
+            }
+            if (convKey) break;
+          } catch {}
+        }
+      }
+
+      const messages: any[] = [];
+      const { extractContentsFromMessageEvent, decodeMessageEntryHolder } = await import('../xchat/chat-thrift.js');
+      const { secretboxDecrypt } = await import('../xchat/chat-crypto.js');
+
+      for (const event of (eventsResp as any).data || []) {
+        const msg: any = {
+          id: event.id,
+          sender_id: event.sender_id,
+          conversation_id: event.conversation_id,
+          created_at: event.created_at_msec ? new Date(parseInt(event.created_at_msec)).toISOString() : undefined,
+          encrypted: true,
+          source: 'api',
+        };
+
+        // Try to decrypt
+        if (convKey && event.encoded_event) {
+          try {
+            const eventBuf = Buffer.from(event.encoded_event, 'base64');
+            const contents = extractContentsFromMessageEvent(eventBuf);
+            if (contents) {
+              const plaintext = await secretboxDecrypt(contents, convKey);
+              const decoded = decodeMessageEntryHolder(plaintext);
+              if (decoded?.message) {
+                msg.text = decoded.message.text || null;
+                msg.entities = decoded.message.entities || null;
+                msg.attachments = decoded.message.attachments?.map((a: any) => ({
+                  media_hash_key: a.media_hash_key,
+                  type: a.type === 1 ? 'image' : a.type === 2 ? 'gif' : a.type === 3 ? 'video' : a.type === 4 ? 'audio' : a.type === 5 ? 'file' : a.type === 6 ? 'svg' : a.url ? 'url' : `unknown(${a.type})`,
+                  filename: a.filename,
+                  url: a.url,
+                  display_url: a.display_url,
+                  width: a.width,
+                  height: a.height,
+                  filesize_bytes: a.filesize_bytes,
+                })) || null;
+                if (decoded.message.reply_to) msg.reply_to = decoded.message.reply_to;
+                msg.encrypted = false;
+              } else if (decoded?.reaction) {
+                msg.reaction = decoded.reaction;
+                msg.encrypted = false;
+              } else if (decoded?.edit) {
+                msg.edit = decoded.edit;
+                msg.encrypted = false;
+              }
+            }
+          } catch (decErr: any) {
+            log.debug('xchat', `getXChatMessages: decrypt failed for event ${event.id}: ${decErr.message}`);
+          }
+        }
+
+        messages.push(msg);
+      }
+
+      // Events come newest-first from API, reverse for chronological order
+      messages.reverse();
+
+      // Aggregate reactions and edits into their parent messages
+      const messageMap = new Map<string, any>();
+      const aggregated: any[] = [];
+      for (const msg of messages) {
+        if (msg.reaction) {
+          const target = messageMap.get(msg.reaction.message_sequence_id);
+          if (target) {
+            if (!target.reactions) target.reactions = [];
+            if (msg.reaction.action === 'add') {
+              target.reactions.push({ emoji: msg.reaction.emoji, sender_id: msg.sender_id });
+            } else {
+              target.reactions = target.reactions.filter((r: any) => !(r.emoji === msg.reaction.emoji && r.sender_id === msg.sender_id));
+            }
+          } else {
+            // Parent message not in this page — show as standalone
+            aggregated.push(msg);
+          }
+        } else if (msg.edit) {
+          const target = messageMap.get(msg.edit.message_sequence_id);
+          if (target) {
+            target.text = msg.edit.updated_text;
+            target.entities = msg.edit.entities || null;
+            target.edited = true;
+          } else {
+            // Parent message not in this page — show as standalone
+            aggregated.push(msg);
+          }
+        } else if (!msg.encrypted || msg.text || msg.attachments) {
+          // Regular message or decrypted message
+          messageMap.set(msg.id, msg);
+          aggregated.push(msg);
+        } else {
+          // Encrypted event with no content (key change events) — skip
+        }
+      }
+
+      const meta: any = { source: 'api', result_count: aggregated.length };
+      if ((eventsResp as any).meta?.next_token) meta.next_token = (eventsResp as any).meta.next_token;
+      if ((eventsResp as any).meta?.previous_token) meta.previous_token = (eventsResp as any).meta.previous_token;
+
+      log.debug('xchat', `getXChatMessages: fetched ${messages.length} events from API (${aggregated.length} messages, ${messages.length - aggregated.length} reactions/edits)`);
+      res.json({ data: aggregated, meta });
+      return;
+    } catch (apiErr: any) {
+      log.warn('xchat', `getXChatMessages: API fetch failed (${apiErr.status || 'unknown'}), falling back to webhooks`);
+    }
+
+    // Fallback: load from webhook files
     const fs = await import('fs/promises');
     const path = await import('path');
     const { __dirname } = await import('../esm-utils.js');
@@ -533,7 +691,7 @@ export const unlockKeys = async (req: Request, res: Response) => {
       }
       const configJson = JSON.stringify({ sdk_config: jb.key_store_token_map_json, tokens, max_guess_count: jb.max_guess_count });
 
-      const secret = await recover(xchat.pin, configJson, userId);
+      const secret = await recover(xchat.pin, configJson, userId, juiceboxLogger);
       // The recovered secret contains the raw P-256 key material
       // Format: decrypt_key(32) || signing_key(32) (per Go's splitRawRecoveredSecret)
       const decryptKeyB64 = Buffer.from(secret.slice(0, 32)).toString('base64');

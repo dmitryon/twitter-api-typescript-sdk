@@ -151,7 +151,7 @@ The `encoded_message_create_event` sent to the API is: `base64(thrift_encode(Mes
 
 ### Signature
 
-Preimage format (signature version "3"):
+Preimage format (same for version "3" and "7"):
 ```
 "MessageCreateEvent,{message_id},{sender_id},{conversation_id},{key_version},{base64_nopad(contents_bytes)}"
 ```
@@ -159,6 +159,8 @@ Preimage format (signature version "3"):
 Where `contents_bytes` is the raw secretbox ciphertext (the `MessageCreateEvent.contents` field value).
 
 Signature: ECDSA P-256, SHA-256 hash of preimage, raw `r(32) || s(32)` = 64 bytes, base64 with padding.
+
+**CRITICAL**: Use `signature_version: "7"` when sending (not `"3"`). The server may have recently started enforcing this — messages with version "3" were previously accepted but the X app and webhooks always use "7". Fixed in Go bridge commit `18a3476` (2026-05-31). Our implementation was working with "3" before but switched to "7" for safety.
 
 ### MessageEventSignature Thrift
 ```
@@ -230,9 +232,10 @@ The response `encoded_message_event` contains the server-assigned `sequence_id`,
 
 ### Silent Failures
 
-- Messages signed with the wrong key return **200 OK** but the message is not actually delivered
+- Messages signed with the wrong key or wrong signature version return **200 OK** but the message is not actually delivered
+- The server now returns `MessageFailureEvent` with failure types: `InvalidSenderSignature`, `ContentsTooLarge`, `RecipientHasNotTrustedConversation`
 - The conversation is not created if the first message has invalid encryption
-- No error is returned — you only discover this by checking if the conversation appears in the recipient's inbox
+- Previously (before Go fix `18a3476`): using `signature_version: "3"` caused all messages to be silently dropped. Must use `"7"`.
 
 ## TypeScript / Node.js Issues
 
@@ -339,10 +342,11 @@ When starting a new chat from the follower list, the conversation ID IS the reci
 ### New Conversation Key Exchange is Broken (as of May 2026)
 
 - `POST /2/chat/conversations/{id}/keys` (initializeChatConversationKeys) returns **404** in production
-- Without this endpoint, there's no way to register conversation keys for a new conversation via the API
-- The server accepts messages with 200 OK even without key registration, but the **recipient cannot decrypt** them (they never receive the conversation key)
-- **Workaround**: Only reply to conversations initiated by the other party (via X app), where the key change event is delivered via webhook/XAA
-- The X app handles key exchange internally through a different mechanism (possibly WebSocket-based, not REST API)
+- The documented workflow (init keys → send message) cannot be completed
+- Without key initialization, `POST /messages` returns 200 OK but the message does NOT appear in `GET /events` — the server accepts but doesn't commit it
+- The recipient never receives the conversation key, so even if the message were delivered, they couldn't decrypt it
+- **Workaround**: Only reply to conversations initiated by the other party (via X app), where the key change event is delivered via webhook/XAA or included in the `/events` response metadata (`conversation_key_events`)
+- The X app handles key exchange internally through a different mechanism (possibly WebSocket/GraphQL mutation, not REST API)
 
 
 ### Conversation ID Format: Colons vs Dashes
@@ -409,6 +413,20 @@ Pattern: `^([0-9]{1,19}|[0-9]{1,19}-[0-9]{1,19}|g[0-9]{1,19})$`
 
 Despite being documented, the endpoint returns 403 "client-not-enrolled" for our OAuth2 tokens even with Enterprise tier access. Likely not yet implemented or requires additional whitelisting from X's side.
 
+Tested 2026-05-31:
+```
+GET /2/chat/media/2055579677322792960-2055625073969508352/uyRoQX6YK0 → 403 (171ms)
+{
+  "client_id": "28907132",
+  "detail": "When authenticating requests to the Twitter API v2 endpoints, you must use keys and tokens from a Twitter developer App that is attached to a Project. You can create a project via the developer portal.",
+  "registration_url": "https://developer.twitter.com/en/docs/projects/overview",
+  "title": "Client Forbidden",
+  "required_enrollment": "Appropriate Level of API Access",
+  "reason": "client-not-enrolled",
+  "type": "https://api.twitter.com/2/problems/client-forbidden"
+}
+```
+
 The Go bridge (`mautrix-twitter`) downloads media via the TON URL (`https://ton.x.com/1.1/ton/data/xchat_media/{conversation_id}/{media_hash_key}`) using web session cookies, not the REST API.
 
 
@@ -440,6 +458,85 @@ The codebase uses a **generic thrift codec** (`thrift-codec.ts`) with auto-gener
 - Supports: BOOL, I32, I64, STRING (text + binary), STRUCT (nested), LIST
 
 **Benefit**: Adding support for new message types (reactions, edits, group events) requires zero codec changes — just use the existing schema.
+
+### Field 108 in MessageCreateEvent (Undocumented)
+
+The `MessageCreateEvent` thrift contains an undocumented **field 108** (struct) not present in the Go reference:
+- `field_108.1` (32 bytes binary) — unknown purpose, not a nonce (secretbox fails)
+- `field_108.2` (72 bytes binary) — decrypts with secretbox to 32 bytes, but does NOT match any hash of the message content (SHA-256, HMAC-SHA256 with conv key or field_108.1 all fail)
+- `field_108.4` (list of 72-byte binaries) — present only on messages that have reactions; each entry decrypts to 32 bytes
+
+This is likely a **content integrity/commitment structure** (possibly MLS tree-related), NOT reaction data. The 32-byte decrypted values don't correspond to any obvious hash of the plaintext, ciphertext, or message text.
+
+
+## Reactions Are Client-Side Aggregated
+
+Reactions are **NOT embedded in the message payload** — neither in the encrypted thrift content nor in the outer MessageEvent structure. They exist only as separate `reaction_add`/`reaction_remove` events referencing the parent message by `message_sequence_id`.
+
+**Confirmed from X client source** (`xchat-kmp.85e9461a.js`, 7.3MB KMP bundle):
+- The `com.x.models.dm.DmEntryContents.Message` class has a `reactions` field (field index 3)
+- But this field is populated **client-side from a local SQLite database** (`dm_conv_previews` table with columns: `reaction_added_by_user`, `reaction_emoji`, `reaction_added_at_timestamp`, `reaction_added_on_attachment_id`)
+- The app processes reaction events from the event stream and stores them locally
+- When rendering a message, it enriches the decrypted content with reactions from the local DB
+
+**Our approach** (aggregating reaction events into parent messages in the handler) is identical to what the X app does internally.
+
+### Reaction Event Format
+```
+MessageEntryHolder {
+  contents: MessageEntryContents {
+    reaction_add: {           // field 2
+      message_sequence_id: string   // target message ID
+      emoji: string                 // e.g. "🐳", "👍"
+    }
+  }
+}
+```
+
+
+## Juicebox Key Registration
+
+### Registration vs Recovery
+
+- **Recovery** (`Recover1`/`Recover2`/`Recover3`): Retrieves existing secret using PIN. Requires `recover_threshold` (2 of 3) realms.
+- **Registration** (`Register1`/`Register2`): Stores a new secret protected by PIN. Requires `register_threshold` (3 of 3) realms.
+
+### Registration Protocol (from HAR capture)
+
+The registration is a **2-phase protocol** (not 3-phase like recovery):
+
+**Software realm (realm-b.x.com):**
+- Phase 1: CBOR string `"Register1"` → `{"Register1": "Ok"}`
+- Phase 2: CBOR `"Register2"` with OPRF keys + encrypted secret → `{"Register2": "Ok"}`
+- Auth: Bearer token in HTTP header (no Noise handshake)
+
+**Hardware realms (realm-east1, realm-west1):**
+- Phase 1: Noise NK handshake with `Register1` piggybacked (same as recovery)
+- Phase 2: Transport-encrypted `Register2` payload
+- Auth: Token in CBOR payload (`auth_token` field)
+
+### Register2 Payload Fields
+
+From the HAR capture, the `Register2` CBOR struct contains:
+- `version` — realm state version (from `realm_state` in token_map response)
+- `oprf_private_key` (32 bytes) — random Ristretto255 scalar
+- `oprf_signed_public_key` — struct with `public_key` (32 bytes) and `verifying_key` (32 bytes)
+- Encrypted secret data (the PIN-protected key material)
+- Policy/guess count configuration
+
+### AddXChatPublicKeyMutation
+
+GraphQL mutation to publish public keys to X's server:
+- Endpoint: `POST https://api.x.com/graphql/CQsk6GRuWAVabyXqqEG1sA/AddXChatPublicKeyMutation`
+- Input: `public_key` (SPKI), `signing_public_key` (SPKI), `identity_public_key_signature`, `registration_method: "CustomPin"`
+- Response: Returns `token_map` with fresh Juicebox auth tokens + assigned `version`
+
+**Pitfall**: The `version` in the request is a client-generated timestamp, but the server may assign a different `version` in the response. Use the response version for subsequent operations.
+
+### identity_public_key_signature
+
+The `identity_public_key_signature` field in `AddXChatPublicKeyMutation` is a signature proving the client owns the private key. Format and preimage TBD — likely ECDSA P-256 over some canonical representation of the public keys.
+
 
 
 ## Webhook Payload: No User Information

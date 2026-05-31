@@ -1,5 +1,5 @@
 window.XChatUI = (() => {
-  let state = { integrationId: null, appId: null, auth: 'oauth2', conversations: [], currentConversation: null, messages: [], userId: null };
+  let state = { integrationId: null, appId: null, auth: 'oauth2', conversations: [], currentConversation: null, messages: [], userId: null, nextToken: null };
   const userCache = {};
 
   function getModal() {
@@ -208,6 +208,7 @@ window.XChatUI = (() => {
       if (!res.ok) throw new Error(typeof data.error === 'string' ? data.error : data.detail || JSON.stringify(data.error) || `HTTP ${res.status}`);
       state.messages = data.data || [];
       state.messagesSource = data.meta?.source || 'unknown';
+      state.nextToken = data.meta?.next_token || null;
       const senderIds = [...new Set(state.messages.map(m => m.sender_id).filter(Boolean))];
       await lookupUsers(senderIds);
       renderMessages();
@@ -220,7 +221,8 @@ window.XChatUI = (() => {
   function renderMessages(errorMsg) {
     const content = document.getElementById('xchatContent');
     const backBtn = `<button class="btn btn-secondary btn-sm" onclick="XChatUI.showTab('conversations')">← Back</button>`;
-    const sourceNote = `<div class="xchat-enc-note">📨 Messages loaded from <strong>webhook events</strong> (XAA). No REST API exists for X Chat message history.</div>`;
+    const sourceLabel = state.messagesSource === 'api' ? '🔐 Messages fetched from X Chat API and decrypted locally' : '📨 Messages loaded from webhook events';
+    const sourceNote = `<div class="xchat-enc-note">${sourceLabel}</div>`;
 
     const messagesHtml = errorMsg
       ? `<div class="xchat-error-msg">⚠️ Could not load messages: ${errorMsg.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`
@@ -228,6 +230,21 @@ window.XChatUI = (() => {
       ? '<div class="loading">No messages yet. Messages will appear here when received via webhook.</div>'
       : state.messages.map(m => {
           const isSelf = m.sender_id === state.userId;
+          // Standalone reaction (parent not in page)
+          if (m.reaction) {
+            return `<div class="xchat-message xchat-msg-event">
+              <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''}</span>
+              ${renderUser(m.sender_id, isSelf)} ${m.reaction.action === 'add' ? 'reacted' : 'unreacted'} ${m.reaction.emoji}
+            </div>`;
+          }
+          // Standalone edit (parent not in page)
+          if (m.edit) {
+            return `<div class="xchat-message xchat-msg-event">
+              <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''}</span>
+              ${renderUser(m.sender_id, isSelf)} edited a message: "${escapeHtml(m.edit.updated_text || '')}"
+            </div>`;
+          }
+          const replyHtml = m.reply_to ? `<div class="xchat-reply-preview"><span class="xchat-reply-sender">${m.reply_to.sender_display_name || m.reply_to.sender_id || ''}</span> ${escapeHtml(m.reply_to.message_text || '')}</div>` : '';
           const textHtml = m.text ? `<div>${renderTextWithEntities(m.text, m.entities)}</div>` : '';
           const attHtml = m.attachments?.length ? m.attachments.map(a => {
             if (a.type === 'url' && a.url) return `<div class="xchat-attachment">🔗 <a href="${a.url}" target="_blank">${a.display_url || a.url}</a></div>`;
@@ -249,24 +266,32 @@ window.XChatUI = (() => {
             }
             return `<div class="xchat-attachment xchat-file-attachment">📎 <strong>${name}</strong> <span class="xchat-file-meta">${a.type || 'file'}${dimStr}${sizeStr}</span> ${downloadBtn}</div>`;
           }).join('') : '';
+          // Reactions display
+          const reactionsHtml = m.reactions?.length ? `<div class="xchat-reactions">${m.reactions.map(r => `<span class="xchat-reaction" title="${r.sender_id}">${r.emoji}</span>`).join('')}</div>` : '';
+          const editedTag = m.edited ? '<span class="xchat-edited">(edited)</span>' : '';
           return `
             <div class="xchat-message ${isSelf ? 'xchat-msg-self' : ''}">
               <div class="xchat-msg-meta">
                 ${renderUser(m.sender_id, isSelf)}
-                <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''}</span>
+                <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''} ${editedTag}</span>
               </div>
               <div class="xchat-msg-body">
+                ${replyHtml}
                 ${textHtml}
                 ${attHtml}
-                ${m.encrypted ? '<div class="xchat-encrypted-payload">[encrypted — decryption pending]</div>' : ''}
+                ${reactionsHtml}
+                ${m.encrypted ? '<div class="xchat-encrypted-payload">[encrypted — keys not available]</div>' : ''}
               </div>
             </div>
           `;
         }).join('');
 
+    const loadMoreBtn = state.nextToken ? `<button class="btn btn-secondary btn-sm xchat-load-more" onclick="XChatUI.loadOlderMessages()">Load older messages...</button>` : '';
+
     content.innerHTML = `
       ${backBtn}
       ${sourceNote}
+      ${loadMoreBtn}
       <div class="xchat-messages-list">${messagesHtml}</div>
       <div class="xchat-send-form">
         <input type="file" id="xchatFileInput" accept="image/*" style="display:none" onchange="XChatUI.onFileSelect(event)">
@@ -635,6 +660,21 @@ window.XChatUI = (() => {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  async function loadOlderMessages() {
+    if (!state.nextToken || !state.currentConversation) return;
+    try {
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/messages?auth=${state.auth}&pagination_token=${encodeURIComponent(state.nextToken)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+      const older = data.data || [];
+      state.messages = [...older, ...state.messages];
+      state.nextToken = data.meta?.next_token || null;
+      const senderIds = [...new Set(older.map(m => m.sender_id).filter(Boolean))];
+      await lookupUsers(senderIds);
+      renderMessages();
+    } catch {}
+  }
+
   async function downloadMedia(mediaHashKey, filename) {
     if (!state.integrationId || !state.currentConversation) return;
     const url = `/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(mediaHashKey)}`;
@@ -656,5 +696,5 @@ window.XChatUI = (() => {
     }
   }
 
-  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia };
+  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages };
 })();
