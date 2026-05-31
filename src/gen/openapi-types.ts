@@ -69,6 +69,14 @@ export interface paths {
      */
     post: operations["initializeChatGroup"];
   };
+  "/2/chat/conversations/{id}": {
+    /** Returns metadata for a Chat conversation including type, muted status, and group details. Use chat_conversation.fields to select which fields are returned. Use expansions to hydrate member, admin, or participant user objects. Use user.fields to control which profile fields are returned for expanded users. */
+    get: operations["getChatConversation"];
+  };
+  "/2/chat/conversations/{id}/events": {
+    /** Retrieves messages and key change events for a specific Chat conversation with pagination support. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient. */
+    get: operations["getChatConversationEvents"];
+  };
   "/2/chat/conversations/{id}/keys": {
     /**
      * Initializes encryption keys for a Chat conversation. This is the first step
@@ -1010,6 +1018,21 @@ export interface components {
       };
       errors?: components["schemas"]["Problem"][];
     };
+    ChatGetConversationResponse: {
+      /** @description List of message events in the conversation. */
+      data?: components["schemas"]["ChatMessageEvent"][];
+      errors?: components["schemas"]["Problem"][];
+      meta?: {
+        /** @description Conversation key change events needed for decryption. */
+        conversation_key_events?: string[];
+        /** @description Whether there are more messages to fetch. */
+        has_more?: boolean;
+        /** @description Token to retrieve the next page of results. */
+        next_token?: string;
+        /** @description The number of message events returned. */
+        result_count?: number;
+      };
+    };
     ChatGetConversationsResponse: {
       /** @description List of conversations in the user's inbox. */
       data?: components["schemas"]["ChatConversation"][];
@@ -1154,6 +1177,28 @@ export interface components {
         session_id: string;
       };
     };
+    /** @description An Chat message event with extracted envelope fields and the original encoded event. */
+    ChatMessageEvent: {
+      /** @description The conversation ID this message belongs to. */
+      conversation_id?: string;
+      /** @description The conversation token for this message. */
+      conversation_token?: string;
+      /** @description The creation timestamp in milliseconds. */
+      created_at_msec?: string;
+      /** @description Base64-encoded MessageEvent for client decoding. */
+      encoded_event: string;
+      /** @description The unique identifier for this message event (message_id). */
+      id?: string;
+      /** @description Whether the message is from a trusted source. */
+      is_trusted?: boolean;
+      message_event_signature?: components["schemas"]["ChatMessageEventSignature"];
+      /** @description The sequence ID of the previous message. */
+      previous_sequence_id?: string;
+      /** @description The user ID of the message sender. */
+      sender_id?: string;
+      /** @description The sequence identifier for ordering messages. */
+      sequence_id?: string;
+    };
     /** @description Message event signature for verification. */
     ChatMessageEventSignature: {
       /** @description List of signing key information for message verification. */
@@ -1178,6 +1223,8 @@ export interface components {
     };
     /** @description A user's public key with associated key recovery configuration. */
     ChatPublicKey: {
+      /** @description DER-encoded signature proving the signing key is bound to the identity key (base64 encoded). */
+      identity_public_key_signature?: string;
       juicebox_config?: components["schemas"]["ChatJuiceboxConfig"];
       /** @description Identity public key (base64 encoded). */
       public_key?: string;
@@ -1691,6 +1738,19 @@ export interface components {
           /** @description List of whitelisted country codes */
           whitelisted_country_codes: string[];
         };
+    Get2ChatConversationsIdEventsResponse: {
+      data?: components["schemas"]["ChatMessageEvent"][];
+      errors?: components["schemas"]["Problem"][];
+      meta?: {
+        next_token?: components["schemas"]["NextToken"];
+        result_count?: components["schemas"]["ResultCount"];
+      };
+    };
+    Get2ChatConversationsIdResponse: {
+      data?: components["schemas"]["ChatConversation"];
+      errors?: components["schemas"]["Problem"][];
+      includes?: components["schemas"]["Expansions"];
+    };
     Get2ChatConversationsResponse: {
       data?: components["schemas"]["ChatConversation"][];
       errors?: components["schemas"]["Problem"][];
@@ -3309,6 +3369,8 @@ export interface components {
     };
     /** @description Public key information for Chat encryption */
     PublicKey: {
+      /** @description DER-encoded signature proving the signing key is bound to the identity key (base64 encoded). */
+      identity_public_key_signature?: string;
       /** @description Identity public key (base64 encoded). */
       public_key?: string;
       /** @description Signing public key (base64 encoded). */
@@ -3890,6 +3952,14 @@ export interface components {
          * @description Number of times this Tweet has been viewed.
          */
         impression_count?: number;
+      };
+      /** @description The note request suggestions for the post. */
+      note_request_suggestions?: {
+        source_link?: components["schemas"]["UrlEntity"];
+        /** @description The text of the note request suggestion. */
+        suggestion?: string;
+        /** @description The unique identifier of the note request suggestion. */
+        suggestion_id?: string;
       };
       /** @description The full-content of the Tweet, including text beyond 280 characters. */
       note_tweet?: {
@@ -5177,6 +5247,7 @@ export interface components {
     )[];
     /** @description A comma separated list of PublicKey fields to display. */
     PublicKeyFieldsParameter: (
+      | "identity_public_key_signature"
       | "juicebox_config"
       | "public_key"
       | "signing_public_key"
@@ -5262,6 +5333,7 @@ export interface components {
       | "matched_media_notes"
       | "media_metadata"
       | "non_public_metrics"
+      | "note_request_suggestions"
       | "note_tweet"
       | "organic_metrics"
       | "possibly_sensitive"
@@ -5480,7 +5552,7 @@ export interface operations {
   getActivitySubscriptions: {
     parameters: {
       query: {
-        /** The maximum number of results to return per page. */
+        /** The maximum number of results to return per page. Defaults to 1000 when unspecified; use pagination_token (from response meta.next_token) to fetch additional pages. */
         max_results?: number;
         /** This parameter is used to get the next 'page' of results. */
         pagination_token?: components["schemas"]["PaginationToken32"];
@@ -5681,6 +5753,70 @@ export interface operations {
       200: {
         content: {
           "application/json": components["schemas"]["ChatInitializeGroupResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Returns metadata for a Chat conversation including type, muted status, and group details. Use chat_conversation.fields to select which fields are returned. Use expansions to hydrate member, admin, or participant user objects. Use user.fields to control which profile fields are returned for expanded users. */
+  getChatConversation: {
+    parameters: {
+      path: {
+        /** The conversation ID. For 1:1 conversations, use the recipient user ID or dash-separated canonical ID. For group conversations, use the group ID (prefixed with 'g'). */
+        id: string;
+      };
+      query: {
+        /** A comma separated list of ChatConversation fields to display. */
+        "chat_conversation.fields"?: components["parameters"]["ChatConversationFieldsParameter"];
+        /** A comma separated list of fields to expand. */
+        expansions?: components["parameters"]["ChatConversationExpansionsParameter"];
+        /** A comma separated list of User fields to display. */
+        "user.fields"?: components["parameters"]["UserFieldsParameter"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatGetConversationsResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Retrieves messages and key change events for a specific Chat conversation with pagination support. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient. */
+  getChatConversationEvents: {
+    parameters: {
+      path: {
+        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        id: components["schemas"]["ChatConversationOrRecipientId"];
+      };
+      query: {
+        /** Maximum number of message events to return. */
+        max_results?: number;
+        /** Token for pagination to retrieve the next page of results. */
+        pagination_token?: string;
+        /** A comma separated list of ChatMessageEvent fields to display. */
+        "chat_message_event.fields"?: components["parameters"]["ChatMessageEventFieldsParameter"];
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ChatGetConversationResponse"];
         };
       };
       /** The request has failed. */
@@ -10424,6 +10560,8 @@ export type updateActivitySubscription = operations['updateActivitySubscription'
 export type getChatConversations = operations['getChatConversations']
 export type createChatConversation = operations['createChatConversation']
 export type initializeChatGroup = operations['initializeChatGroup']
+export type getChatConversation = operations['getChatConversation']
+export type getChatConversationEvents = operations['getChatConversationEvents']
 export type initializeChatConversationKeys = operations['initializeChatConversationKeys']
 export type addChatGroupMembers = operations['addChatGroupMembers']
 export type sendChatMessage = operations['sendChatMessage']

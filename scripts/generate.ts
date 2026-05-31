@@ -9,8 +9,6 @@ import type {
   RequestBody,
   ResponseObject,
   SchemaObject,
-  // https://github.com/microsoft/TypeScript/issues/49721
-  // @ts-expect-error
 } from "openapi-typescript";
 import { promises as fs } from "fs";
 import prettier from "prettier";
@@ -170,7 +168,7 @@ function buildClasses(classes: {
 
 export async function generate(): Promise<void> {
   const specFileIndex = process.argv.indexOf("--specFile");
-  let specFilePath: string;
+  let specFilePath: string = '';
   if (specFileIndex > -1) specFilePath = process.argv[specFileIndex + 1];
   let spec: OpenAPI3 & {
     tags: Record<string, any>;

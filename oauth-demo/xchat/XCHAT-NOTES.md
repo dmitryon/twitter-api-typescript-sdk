@@ -35,6 +35,16 @@ bytes[32:64] = signing key (private scalar)
 
 ## Juicebox (PIN-based Key Recovery)
 
+### CRITICAL: Never Retry Wrong PINs
+
+Each failed `unlockKeys` attempt with a wrong PIN **permanently decrements the guess counter** on Juicebox realms. Once exhausted (`max_guess_count: 20` in production config), the secret is permanently destroyed — the user loses access to their private keys and all encrypted conversations forever.
+
+**Rules:**
+- Never auto-retry `unlockKeys` on failure
+- If recovery returns "Invalid PIN" or guess count decrements, stop immediately and surface the error to the user
+- Never call `unlockKeys` in a loop or background job
+- Store the PIN only after a successful unlock — do not persist an unverified PIN
+
 ### Auth Tokens Expire
 
 The `juicebox_config.token_map` contains bearer tokens for authenticating to Juicebox realms. These tokens **expire** (short-lived). The `unlockKeys` flow must always fetch fresh public keys from the API — never use cached `juicebox_config` for recovery.
@@ -185,11 +195,19 @@ MessageEventSignature {
 
 ## API Quirks
 
-### GET /2/chat/conversations/{id} (Message History) — DOES NOT EXIST
+### GET /2/chat/conversations/{id}/events — Message History ✅
 
-- Listed in the migration guide but **not in the OpenAPI spec** and **returns 404 in production**
-- This endpoint does not work — message history is only available via XAA webhooks/stream or the internal GraphQL API (requires web session cookies, not OAuth2)
-- See "No REST API for Message History" section below for details
+- **NEW** (spec v2.164): `GET /2/chat/conversations/{id}/events` — returns encrypted message events with pagination
+- Returns `encoded_event` (thrift MessageEvent with encrypted contents), `message_event_signature`, `sender_id`, `conversation_id`, `created_at_msec`, `conversation_token`
+- Supports `max_results` (1-100, default 10) and `pagination_token`
+- Accepts recipient user ID (server constructs canonical ID) or dash-separated format
+- This is the REST API equivalent of what XAA webhooks deliver — same encrypted payload format
+- Decrypt flow is identical: extract contents from MessageEvent thrift → secretbox decrypt → decode MessageEntryHolder
+
+### GET /2/chat/conversations/{id}/messages — DOES NOT EXIST
+
+- Returns **404** regardless of ID format or query params
+- Not in the OpenAPI spec — use `/events` instead
 
 ### Response Format for Send
 
@@ -271,6 +289,26 @@ Docs: https://docs.x.com/x-api/webhooks/introduction
 
 Webhook `message_event_signature.signature_version` is `"7"` (not `"3"` as used for sending). This may indicate a different preimage format for verification.
 
+## Public Keys API Behavior
+
+### Non-Enrolled Users Return Empty Object
+
+`GET /2/users/{id}/public_keys` for a user who hasn't enrolled in XChat returns:
+```json
+{}
+```
+
+HTTP 200, no `data` field, no error. This can be used to check whether a user has XChat enabled.
+
+### Enrollment is Opt-In (Not Universal)
+
+Empirical testing (May 2026) shows XChat enrollment is **not automatic**. Many major accounts are not enrolled:
+- ❌ @Apple, @Microsoft, @amazon, @Nike, @YouTube, @POTUS
+- ❌ News orgs: @CNN, @BBCWorld, @nytimes, @tagesschau
+- ✅ @elonmusk, @X, @Tesla, @Google, @OpenAI, @github, @Netflix, @Uber, @Airbnb, @McDonalds, @NASA
+
+Pattern unclear — possibly tied to Premium subscription or manual opt-in via Settings → Privacy → Encrypted messages.
+
 ## Storage Architecture
 
 | Store | Key | Contains |
@@ -323,13 +361,13 @@ Always use dash (`-`) for:
 **Pitfall**: Storing keys with `:` but looking up with `-` causes cache misses → triggers unnecessary new conversation initialization.
 
 
-### No REST API for Message History
+### Message History via REST API
 
-- `GET /2/chat/conversations/{id}` is mentioned in the migration guide but **not in the OpenAPI spec** and returns 404 in production
-- The Go bridge (`mautrix-twitter`) uses a **GraphQL endpoint**: `GET https://api.x.com/graphql/uQEDp5FgdqNiG2jT5q07Jw/GetInboxPageConversationDataRequestQuery?variables={"conversation_id":"..."}` 
-- This GraphQL endpoint requires **web session auth** (cookies + CSRF token), NOT OAuth2
-- It's the internal Twitter web client API, not the public developer API
-- **Conclusion**: Message history is only available via XAA webhooks/stream (real-time) or by implementing the full web client login flow (cookies, not OAuth2)
+- `GET /2/chat/conversations/{id}/events` — **WORKS** (added in spec v2.164)
+- Returns paginated encrypted events (same format as XAA webhooks)
+- `GET /2/chat/conversations/{id}` — works, returns metadata only (type, participants, muted)
+- `GET /2/chat/conversations/{id}/messages` — 404, does not exist
+- The Go bridge (`mautrix-twitter`) uses a GraphQL endpoint with web session cookies — no longer necessary with the `/events` endpoint
 
 
 ### X Chat Media Upload Not Available (as of May 2026)

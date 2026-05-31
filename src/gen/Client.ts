@@ -32,6 +32,8 @@ import {
   getChatConversations,
   createChatConversation,
   initializeChatGroup,
+  getChatConversation,
+  getChatConversationEvents,
   initializeChatConversationKeys,
   addChatGroupMembers,
   sendChatMessage,
@@ -196,8 +198,8 @@ export class Client {
     auth: string | AuthClient,
     requestOptions?: Partial<RequestOptions>
   ) {
-    this.version = "2.163";
-    this.twitterApiOpenApiVersion = "2.163";
+    this.version = "2.164";
+    this.twitterApiOpenApiVersion = "2.164";
     this.#auth = typeof auth === "string" ? new OAuth2Bearer(auth) : auth;
     this.#defaultRequestOptions = {
       ...requestOptions,
@@ -3024,6 +3026,52 @@ configure the group with members, admins, encryption keys, and other settings.
         ...request_options,
         endpoint: `/2/chat/conversations/group/initialize`,
         method: "POST",
+      }),
+
+    /**
+    * Get Chat Conversation
+    *
+
+    * Returns metadata for a Chat conversation including type, muted status, and group details. Use chat_conversation.fields to select which fields are returned. Use expansions to hydrate member, admin, or participant user objects. Use user.fields to control which profile fields are returned for expanded users.
+    * @param id - The conversation ID. For 1:1 conversations, use the recipient user ID or dash-separated canonical ID. For group conversations, use the group ID (prefixed with 'g').
+    * @param params - The params for getChatConversation
+    * @param request_options - Customize the options for this request
+    */
+    getChatConversation: (
+      id: string,
+      params: TwitterParams<getChatConversation> = {},
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<getChatConversation>> =>
+      rest<TwitterResponse<getChatConversation>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/conversations/${id}`,
+        params,
+        method: "GET",
+      }),
+
+    /**
+    * Get Chat Conversation Events
+    *
+
+    * Retrieves messages and key change events for a specific Chat conversation with pagination support. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient.
+    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param params - The params for getChatConversationEvents
+    * @param request_options - Customize the options for this request
+    */
+    getChatConversationEvents: (
+      id: string,
+      params: TwitterParams<getChatConversationEvents> = {},
+      request_options?: Partial<RequestOptions>
+    ): TwitterPaginatedResponse<TwitterResponse<getChatConversationEvents>> =>
+      paginate<TwitterResponse<getChatConversationEvents>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/chat/conversations/${id}/events`,
+        params,
+        method: "GET",
       }),
 
     /**
