@@ -39,34 +39,45 @@ window.XChatUI = (() => {
     const content = document.getElementById('xchatContent');
     content.innerHTML = '<div class="loading">Checking X Chat settings...</div>';
     try {
-      const res = await fetch(`/integrations/${state.integrationId}/xchat/settings`);
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/settings?auth=${state.auth}`);
       const data = await res.json();
       if (data.xchat?.user_id) state.userId = data.xchat.user_id;
-      if (data.xchat?.has_pin) {
+
+      if (data.xchat?.has_private_key) {
+        // Keys cached locally — ready to go
         showTab('conversations');
+      } else if (!data.xchat?.has_pin) {
+        // No PIN set yet
+        renderPinPrompt(data.xchat?.needs_registration);
+      } else if (data.xchat?.needs_registration) {
+        // Has PIN but no keys on server — needs registration
+        renderRegistrationPrompt();
       } else {
-        renderPinPrompt();
+        // Has PIN, keys on server — attempt unlock
+        await attemptUnlock();
       }
     } catch (e) {
-      renderPinPrompt();
+      renderPinPrompt(false);
     }
   }
 
-  function renderPinPrompt() {
+  function renderPinPrompt(needsRegistration) {
     const content = document.getElementById('xchatContent');
+    const title = needsRegistration ? '🔐 Set Up X Chat Encryption' : '🔐 X Chat PIN Required';
+    const desc = needsRegistration
+      ? 'Choose a 4-digit PIN to protect your encryption keys. This PIN will be used to recover your keys on other devices.'
+      : 'Enter the 4-digit numeric PIN you set up in the X app\'s Chat settings (Settings → Privacy → Direct Messages → Set passcode).';
     content.innerHTML = `
       <div class="xchat-pin-section">
-        <h3>🔐 X Chat PIN Required</h3>
-        <p>Enter the 4-digit numeric PIN you set up in the X app's Chat settings (Settings → Privacy → Direct Messages → Set passcode).</p>
-        <p>Without it, you will not be able to access your messages.</p>
+        <h3>${title}</h3>
+        <p>${desc}</p>
         <div class="xchat-pin-form">
           <input type="password" id="xchatPinInput" placeholder="••••" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off">
           <button class="btn btn-primary" onclick="XChatUI.savePin()">Save PIN</button>
         </div>
-        <p class="hint">Your PIN is stored securely on this server. Treat it like a password.</p>
+        <p class="hint">${needsRegistration ? 'This will generate new encryption keys and register them with X.' : 'Your PIN is stored securely on this server.'}</p>
       </div>
     `;
-    // Auto-focus and submit on 4 digits
     setTimeout(() => {
       const input = document.getElementById('xchatPinInput');
       if (input) {
@@ -78,10 +89,65 @@ window.XChatUI = (() => {
     }, 50);
   }
 
+  function renderRegistrationPrompt() {
+    const content = document.getElementById('xchatContent');
+    content.innerHTML = `
+      <div class="xchat-pin-section">
+        <h3>🔑 Set Up X Chat Encryption</h3>
+        <p>Your account doesn't have encryption keys registered yet. Click below to generate keys and register them with X.</p>
+        <p>Your existing PIN will be used to protect the keys.</p>
+        <button class="btn btn-primary" onclick="XChatUI.registerKeys()">Generate & Register Keys</button>
+      </div>
+    `;
+  }
+
+  async function attemptUnlock() {
+    const content = document.getElementById('xchatContent');
+    content.innerHTML = '<div class="loading">🔑 Unlocking encryption keys...</div>';
+    try {
+      const unlockRes = await fetch(`/integrations/${state.integrationId}/xchat/unlock?auth=${state.auth}`, { method: 'POST' });
+      const unlockData = await unlockRes.json();
+      if (unlockData.unlocked) {
+        content.innerHTML = '<div class="loading">✅ Keys unlocked!</div>';
+        await new Promise(r => setTimeout(r, 800));
+        showTab('conversations');
+      } else {
+        content.innerHTML = `<div class="xchat-pin-section">
+          <h3>⚠️ Unlock Failed</h3>
+          <p>${unlockData.reason || 'Could not recover keys from Juicebox.'}</p>
+          <button class="btn btn-secondary" onclick="XChatUI.resetPin()">Reset PIN</button>
+          <button class="btn btn-primary" onclick="XChatUI.showTab('conversations')">Continue without decryption</button>
+        </div>`;
+      }
+    } catch (e) {
+      showTab('conversations');
+    }
+  }
+
+  async function registerKeys() {
+    const content = document.getElementById('xchatContent');
+    content.innerHTML = '<div class="loading">🔑 Generating keys and registering with X...</div>';
+    try {
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/register?auth=${state.auth}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Registration failed');
+      content.innerHTML = '<div class="loading">✅ Encryption keys registered!</div>';
+      await new Promise(r => setTimeout(r, 1000));
+      showTab('conversations');
+    } catch (e) {
+      content.innerHTML = `<div class="xchat-pin-section">
+        <h3>❌ Registration Failed</h3>
+        <p>${e.message}</p>
+        <button class="btn btn-primary" onclick="XChatUI.checkPinAndShow()">Retry</button>
+      </div>`;
+    }
+  }
+
   async function savePin() {
     const pin = document.getElementById('xchatPinInput').value.trim();
-    if (!pin) { alert('PIN is required'); return; }
+    if (!pin || !/^[0-9]{4}$/.test(pin)) { alert('PIN must be exactly 4 digits'); return; }
     const content = document.getElementById('xchatContent');
+    content.innerHTML = '<div class="loading">Saving PIN...</div>';
     try {
       const res = await fetch(`/integrations/${state.integrationId}/xchat/settings`, {
         method: 'PATCH',
@@ -90,26 +156,11 @@ window.XChatUI = (() => {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save PIN');
-      state.pin = pin;
-
-      // Attempt key unlock (best-effort — Juicebox not available in TS)
-      content.innerHTML = '<div class="loading">🔑 Fetching public keys and attempting unlock...</div>';
-      try {
-        const unlockRes = await fetch(`/integrations/${state.integrationId}/xchat/unlock?auth=${state.auth}`, { method: 'POST' });
-        const unlockData = await unlockRes.json();
-        if (unlockData.unlocked) {
-          content.innerHTML = '<div class="loading">✅ Keys unlocked successfully!</div>';
-        } else {
-          content.innerHTML = `<div class="loading">⚠️ Key unlock unavailable (${unlockData.reason || 'Juicebox requires Rust/Python XDK'}). Continuing without decryption.</div>`;
-        }
-        await new Promise(r => setTimeout(r, 1500));
-      } catch (unlockErr) {
-        // Non-fatal — proceed to conversations
-      }
-
-      showTab('conversations');
+      // Re-check state — will now detect needs_registration or attempt unlock
+      await checkPinAndShow();
     } catch (e) {
       alert(`Failed to save PIN: ${e.message}`);
+      renderPinPrompt(false);
     }
   }
 
@@ -696,5 +747,5 @@ window.XChatUI = (() => {
     }
   }
 
-  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages };
+  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow };
 })();

@@ -3,7 +3,7 @@ import { createIntegration, createCredentials, listCredentials, listIntegrations
 import { oauthLogin, oauthCallback, refreshOAuth2Token, revokeOAuth1Tokens, revokeOAuth2Tokens, initAuthStorage } from "./handlers/oauth-handlers";
 import { getDMConversation, sendDM, getFollowers } from "./handlers/dm-handlers";
 import { uploadMedia, proxyMedia } from "./handlers/media-handlers";
-import { getXChatConversations, getXChatMessages, sendXChatMessage, getUserPublicKeys, uploadXChatMedia, proxyXChatMedia, updateXChatSettings, getXChatSettings, unlockKeys } from "./handlers/xchat-handlers";
+import { getXChatConversations, getXChatMessages, sendXChatMessage, getUserPublicKeys, uploadXChatMedia, proxyXChatMedia, updateXChatSettings, getXChatSettings, unlockKeys, registerKeys } from "./handlers/xchat-handlers";
 import { getXAASubscriptions, createXAASubscription, deleteXAASubscription, updateXAASubscription } from "./handlers/xaa-handlers";
 import { handleWebhook, listWebhookEvents, webhookEventBus } from "./handlers/webhook-handlers";
 import { listWebhooks, createWebhook, deleteWebhook, validateWebhook, getSubscriptionCount, listSubscriptions, createSubscription, deleteSubscription, validateSubscription, lookupUsers, proxyPublicImage } from "./handlers/webhook-mgmt-handlers";
@@ -65,6 +65,7 @@ app.get("/integrations/:integrationId/media/proxy", proxyMedia);
 app.get("/integrations/:id/xchat/settings", getXChatSettings);
 app.patch("/integrations/:id/xchat/settings", updateXChatSettings);
 app.post("/integrations/:id/xchat/unlock", unlockKeys);
+app.post("/integrations/:id/xchat/register", registerKeys);
 app.get("/integrations/:id/xchat/conversations", getXChatConversations);
 app.get("/integrations/:id/xchat/conversations/:conversationId/messages", getXChatMessages);
 app.post("/integrations/:id/xchat/conversations/:conversationId/send", sendXChatMessage);

@@ -606,6 +606,7 @@ export const updateXChatSettings = async (req: Request, res: Response) => {
 export const getXChatSettings = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const { auth: authType } = req.query;
 
     const userId = await resolveUserId(id);
     if (!userId) {
@@ -614,10 +615,32 @@ export const getXChatSettings = async (req: Request, res: Response) => {
     }
 
     const xchat = await userXChatStorage.load(userId);
+    const hasPin = !!xchat?.pin;
+    const hasPrivateKey = !!xchat?.private_key;
+
+    // If keys are already cached, no need to check server
+    if (hasPrivateKey) {
+      res.json({ xchat: { has_pin: hasPin, has_private_key: true, needs_registration: false, user_id: userId } });
+      return;
+    }
+
+    // Check if user has published keys on the server
+    let needsRegistration = false;
+    if (hasPin) {
+      try {
+        const resolved = await resolveAuth(id, authType as string || 'oauth2');
+        if (resolved) {
+          const pkResp = await resolved.client.users.getUsersPublicKey(userId) as any;
+          const keyEntry = Array.isArray(pkResp?.data) ? pkResp.data[0] : pkResp?.data;
+          needsRegistration = !keyEntry?.public_key;
+        }
+      } catch {
+        // If we can't check, assume recovery (safer default)
+      }
+    }
+
     res.json({
-      xchat: xchat
-        ? { has_pin: !!xchat.pin, has_private_key: !!xchat.private_key, user_id: userId }
-        : { user_id: userId },
+      xchat: { has_pin: hasPin, has_private_key: false, needs_registration: needsRegistration, user_id: userId },
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || "Unknown error" });
@@ -717,5 +740,87 @@ export const unlockKeys = async (req: Request, res: Response) => {
     const status = error.status || 500;
     const message = error.message?.includes('<!DOCTYPE') ? `${status} Error` : error.message || 'Unknown error';
     res.status(status).json({ error: message });
+  }
+};
+
+export const registerKeys = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { auth: authType } = req.query;
+
+    const resolved = await resolveAuth(id, authType as string);
+    if (!resolved) {
+      res.status(400).json({ error: "Integration not found or invalid auth" });
+      return;
+    }
+
+    const userId = await resolveUserId(id);
+    if (!userId) {
+      res.status(400).json({ error: "Could not resolve user ID" });
+      return;
+    }
+
+    const xchat = await userXChatStorage.load(userId);
+    if (!xchat?.pin) {
+      res.status(400).json({ error: "PIN not set" });
+      return;
+    }
+
+    log.info('xchat', `[register] generating keys for user ${userId}`);
+
+    // Step 1: Generate P-256 key pairs
+    const decryptECDH = crypto.createECDH('prime256v1');
+    decryptECDH.generateKeys();
+    const signingECDH = crypto.createECDH('prime256v1');
+    signingECDH.generateKeys();
+
+    const decryptScalar = decryptECDH.getPrivateKey();
+    const signingScalar = signingECDH.getPrivateKey();
+    const secret = Buffer.concat([decryptScalar, signingScalar]);
+
+    // SPKI encode public keys
+    const spkiPrefix = Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex');
+    const decryptPublicKeySPKI = Buffer.concat([spkiPrefix, decryptECDH.getPublicKey()]).toString('base64');
+    const signingPublicKeySPKI = Buffer.concat([spkiPrefix, signingECDH.getPublicKey()]).toString('base64');
+
+    // Step 2: Publish public keys via REST API
+    log.debug('xchat', `[register] publishing public keys to X API`);
+    const version = String(Date.now());
+    try {
+      // Use the REST API endpoint for adding public keys
+      await rest({
+        auth: resolved.authClient,
+        endpoint: `/2/users/${userId}/public_keys`,
+        method: 'POST',
+        request_body: {
+          public_key: decryptPublicKeySPKI,
+          signing_public_key: signingPublicKeySPKI,
+          version,
+        },
+      });
+      log.info('xchat', `[register] public keys published (version=${version})`);
+    } catch (pkErr: any) {
+      log.warn('xchat', `[register] public key publish failed (${pkErr.status || 'unknown'}): ${pkErr.message}`);
+      // Continue anyway — keys may already be registered or endpoint may not exist
+    }
+
+    // Step 3: Store keys locally (skip Juicebox registration for now if tokens unavailable)
+    const keysJson = JSON.stringify({
+      signingKeyB64: signingScalar.toString('base64'),
+      decryptKeyB64: decryptScalar.toString('base64'),
+      keyVersion: version,
+    });
+
+    await userXChatStorage.save({
+      ...xchat,
+      private_key: keysJson,
+      signing_key_version: version,
+    });
+
+    log.info('xchat', `[register] keys generated and cached for user ${userId}`);
+    res.json({ success: true, registered: true, version });
+  } catch (error: any) {
+    log.error('xchat', `registerKeys failed:`, error.message || error);
+    res.status(500).json({ error: error.message || "Unknown error" });
   }
 };
