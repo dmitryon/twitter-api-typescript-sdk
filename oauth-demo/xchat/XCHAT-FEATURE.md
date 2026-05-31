@@ -127,27 +127,66 @@ oauth-demo/
 
 ```plantuml
 @startuml
-title X Chat PIN Setup
+title X Chat PIN & Enrollment Flow
 
 actor User
 participant "X Chat UI\n(xchat.js)" as UI
 participant "Backend\n(xchat-handlers)" as BE
-database "Integration\n(storage)" as DB
+participant "X API" as API
+participant "Juicebox" as JB
 
 User -> UI: Click "🔐 X Chat"
 UI -> BE: GET /integrations/:id/xchat/settings
-BE -> DB: load integration
-DB --> BE: integration
-BE --> UI: { xchat: { has_pin: false } }
-UI -> User: Show 4-digit PIN prompt\n"Enter PIN from X app Chat settings"
-User -> UI: Enter 4-digit PIN (auto-submits)
-UI -> BE: PATCH /integrations/:id/xchat/settings\n{ pin: "1234" }
-BE -> BE: Validate: /^[0-9]{4}$/
-BE -> DB: save integration.xchat.pin
-DB --> BE: saved
-BE --> UI: { success: true, xchat: { has_pin: true } }
-UI -> UI: showTab('conversations')
+BE -> BE: Resolve user ID from OAuth2 token
+BE --> UI: { has_pin, has_private_key, needs_registration, user_id }
+
+alt has_private_key = true
+  UI -> UI: Ready — show conversations
+else has_pin = false
+  UI -> User: Show 4-digit PIN prompt
+  User -> UI: Enter PIN
+  UI -> BE: PATCH /integrations/:id/xchat/settings { pin }
+else needs_registration = true
+  UI -> User: Show "Set up X Chat encryption" + PIN prompt
+  User -> UI: Enter new PIN
+  UI -> BE: POST /integrations/:id/xchat/register { pin }
+  BE -> BE: Generate P-256 key pairs (signing + decrypt)
+  BE -> API: AddXChatPublicKeyMutation (GraphQL)
+  API --> BE: token_map + version
+  BE -> JB: Register secret on all 3 realms
+  JB --> BE: Ok
+  BE --> UI: { success: true, registered: true }
+else needs_registration = false (keys on server, need unlock)
+  UI -> User: Show "Enter PIN to unlock"
+  User -> UI: Enter PIN
+  UI -> BE: POST /integrations/:id/xchat/unlock
+  BE -> API: GET /2/users/:id/public_keys (fresh tokens)
+  BE -> JB: Recover secret from 2 of 3 realms
+  JB --> BE: 64-byte secret (decrypt_key || signing_key)
+  BE -> BE: Cache private keys locally
+  BE --> UI: { success: true, unlocked: true }
+end
 @enduml
+```
+
+#### Enrollment Detection Logic
+
+The `getXChatSettings` handler determines the user's state:
+
+```typescript
+// 1. Check local cache
+const xchat = await userXChatStorage.load(userId);
+if (xchat?.private_key) return { has_private_key: true, needs_registration: false };
+
+// 2. Check server for published keys
+const pkResponse = await client.users.getUsersPublicKey(userId);
+const hasPublicKeys = !!pkResponse?.data?.public_key;
+
+return {
+  has_private_key: false,
+  has_pin: !!xchat?.pin,
+  needs_registration: !hasPublicKeys,
+};
 ```
 
 ### Getting User Messages Flow
@@ -330,8 +369,15 @@ Browser -> User: 🔐 chat.received [encrypted payload]\nin 📨 Events modal
 | 9 | PIN management + key unlock flow | ✅ Done |
 | 10 | Separate user/conversation key storage from integration | ✅ Done |
 | 11 | Correct encryption stack (P-256, secretbox, KDF2) | ✅ Done |
-| — | Juicebox unlock in TypeScript | ❌ Blocked — requires OPRF protocol port from `pkg/juiceboxgo/` |
-| — | `tweetnacl` dependency for secretbox | ⚠️ Needs `npm install tweetnacl` in oauth-demo |
+| 12 | Juicebox key recovery (PIN → private keys) | ✅ Done |
+| 13 | Juicebox key registration (generate + store keys) | ✅ Done |
+| 14 | Message history from API (`GET /events`) | ✅ Done |
+| 15 | Reactions, edits, reply previews | ✅ Done |
+| 16 | User lookup + avatars in UI | ✅ Done |
+| 17 | Signature version "7" (Go bridge fix) | ✅ Done |
+| — | Enrollment detection + registration UI flow | 🔲 Next |
+| — | Media download (API returns 403) | ❌ Blocked — requires whitelisting from X |
+| — | New conversation key exchange (API returns 404) | ❌ Blocked — endpoint not implemented |
 
 ---
 
