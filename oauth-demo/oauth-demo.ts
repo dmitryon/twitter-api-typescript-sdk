@@ -3,12 +3,13 @@ import { createIntegration, createCredentials, listCredentials, listIntegrations
 import { oauthLogin, oauthCallback, refreshOAuth2Token, revokeOAuth1Tokens, revokeOAuth2Tokens, initAuthStorage } from "./handlers/oauth-handlers";
 import { getDMConversation, sendDM, getFollowers } from "./handlers/dm-handlers";
 import { uploadMedia, proxyMedia } from "./handlers/media-handlers";
-import { getXChatConversations, getXChatMessages, sendXChatMessage, getUserPublicKeys, uploadXChatMedia, proxyXChatMedia, updateXChatSettings, getXChatSettings } from "./handlers/xchat-handlers";
-import { getXAASubscriptions, createXAASubscription, deleteXAASubscription } from "./handlers/xaa-handlers";
+import { getXChatConversations, getXChatMessages, sendXChatMessage, getUserPublicKeys, uploadXChatMedia, proxyXChatMedia, updateXChatSettings, getXChatSettings, unlockKeys } from "./handlers/xchat-handlers";
+import { getXAASubscriptions, createXAASubscription, deleteXAASubscription, updateXAASubscription } from "./handlers/xaa-handlers";
 import { handleWebhook, listWebhookEvents, webhookEventBus } from "./handlers/webhook-handlers";
 import { listWebhooks, createWebhook, deleteWebhook, validateWebhook, getSubscriptionCount, listSubscriptions, createSubscription, deleteSubscription, validateSubscription, lookupUsers, proxyPublicImage } from "./handlers/webhook-mgmt-handlers";
-import { getWebhookConfig, updateWebhookConfig } from "./webhook-config";
+import { getWebhookConfig, updateWebhookConfig } from "./handlers/webhook-config";
 import { log } from './logger';
+import { __dirname } from './esm-utils';
 import dotenv from 'dotenv';
 dotenv.config({ path: '.env' });
 
@@ -33,7 +34,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.static(__dirname + "/public"));
+app.use(express.static(__dirname(import.meta.url) + "/public"));
 
 // Integration routes
 app.post("/integrations", createIntegration);
@@ -63,6 +64,7 @@ app.get("/integrations/:integrationId/media/proxy", proxyMedia);
 // X Chat routes
 app.get("/integrations/:id/xchat/settings", getXChatSettings);
 app.patch("/integrations/:id/xchat/settings", updateXChatSettings);
+app.post("/integrations/:id/xchat/unlock", unlockKeys);
 app.get("/integrations/:id/xchat/conversations", getXChatConversations);
 app.get("/integrations/:id/xchat/conversations/:conversationId/messages", getXChatMessages);
 app.post("/integrations/:id/xchat/conversations/:conversationId/send", sendXChatMessage);
@@ -73,6 +75,7 @@ app.get("/integrations/:id/xchat/media/proxy", proxyXChatMedia);
 // XAA (X Activity API) routes
 app.get("/integrations/:id/xaa/subscriptions", getXAASubscriptions);
 app.post("/integrations/:id/xaa/subscriptions", createXAASubscription);
+app.put("/integrations/:id/xaa/subscriptions/:subscriptionId", updateXAASubscription);
 app.delete("/integrations/:id/xaa/subscriptions/:subscriptionId", deleteXAASubscription);
 
 app.get("/webhook-events", listWebhookEvents);
@@ -111,7 +114,7 @@ app.patch("/webhook-config", updateWebhookConfig);
 
 // Chat page route
 app.get("/integrations/:integrationId/conversation/:userId/:participantId", (req, res) => {
-  res.sendFile(__dirname + "/public/chat.html");
+  res.sendFile(__dirname(import.meta.url) + "/public/chat.html");
 });
 
 async function main() {

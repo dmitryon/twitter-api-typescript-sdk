@@ -81,3 +81,31 @@ export const deleteXAASubscription = async (req: Request, res: Response) => {
     res.status(status).json({ error: error.error || error.message || "Unknown error" });
   }
 };
+
+export const updateXAASubscription = async (req: Request, res: Response) => {
+  try {
+    const { id, subscriptionId } = req.params;
+    const { webhook_id, tag } = req.body;
+
+    const resolved = await resolveAuth(id, 'oauth2');
+    if (!resolved) {
+      res.status(400).json({ error: "Integration not found or invalid auth" });
+      return;
+    }
+
+    const integration = resolved.integration;
+    const client = await appBearerClient(integration.appId);
+
+    const body: any = {};
+    if (webhook_id !== undefined) body.webhook_id = webhook_id;
+    if (tag !== undefined) body.tag = tag;
+
+    const response = await client.activity.updateActivitySubscription(subscriptionId, body);
+    log.info('xaa', `Updated subscription ${subscriptionId}: webhook_id=${webhook_id}, tag=${tag}`);
+    res.json(response);
+  } catch (error: any) {
+    log.error('xaa', `updateXAASubscription failed:`, error.error || error.message || error);
+    const status = error.status || 500;
+    res.status(status).json({ error: error.error || error.message || "Unknown error" });
+  }
+};

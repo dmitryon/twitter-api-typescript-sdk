@@ -5,12 +5,13 @@ import { FileCache } from "../file-cache";
 import { log } from "../logger";
 import { apiLogger } from "../api-logger";
 import { appBearerClient, resolveAuth, integrationStorage } from "./handler-utils";
+import { __dirname } from "../esm-utils";
 
-const USER_CACHE_DIR = path.join(__dirname, "../data/user-cache");
+const USER_CACHE_DIR = path.join(__dirname(import.meta.url), "../data/user-cache");
 const USER_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 const imageCache = new FileCache(
-  path.join(__dirname, "../data/image-cache"),
+  path.join(__dirname(import.meta.url), "../data/image-cache"),
   30 * 24 * 60 * 60 * 1000 // 30 days
 );
 
