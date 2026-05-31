@@ -34,6 +34,7 @@ export interface ApiCallLogEntry {
   params?: Record<string, any>;
   request_body?: Record<string, any>;
   status: number;
+  response_headers?: Record<string, string>;
   response_body?: Record<string, any>;
   duration_ms: number;
 }
@@ -118,7 +119,7 @@ async function safeResponseJson(response: Response): Promise<Record<string, any>
 function buildLogEntry(
   startTime: number,
   args: { method?: string; endpoint: string; base_url?: string; params?: Record<string, any>; request_body?: Record<string, any> },
-  status: number,
+  response: Response,
   response_body?: Record<string, any>,
 ): ApiCallLogEntry {
   const url = new URL((args.base_url || "https://api.x.com") + args.endpoint);
@@ -130,7 +131,8 @@ function buildLogEntry(
     endpoint: args.endpoint,
     params: args.params && Object.keys(args.params).length ? args.params : undefined,
     request_body: args.request_body,
-    status,
+    status: response.status,
+    response_headers: Object.fromEntries(response.headers),
     response_body,
     duration_ms: Date.now() - startTime,
   };
@@ -217,7 +219,7 @@ export async function request({
     const error = await safeResponseJson(response);
       if (logger) {
           try {
-              logger.log(buildLogEntry(startTime, { method, endpoint, base_url, params: query, request_body }, response.status, error));
+              logger.log(buildLogEntry(startTime, { method, endpoint, base_url, params: query, request_body }, response, error));
           } catch {
           }
       }
@@ -262,7 +264,7 @@ export async function rest<T = Record<string, any>>(
   const json = await safeResponseJson(response) as T;
   if (args.logger) {
       try {
-          args.logger.log(buildLogEntry(startTime, args, response.status, json as Record<string, any>));
+          args.logger.log(buildLogEntry(startTime, args, response, json as Record<string, any>));
       } catch {
       }
   }
