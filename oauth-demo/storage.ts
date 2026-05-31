@@ -3,12 +3,13 @@ import path from "path";
 import { Integration, TwitterApplicationCredentials, AuthSession, AccessTokenEntry } from "./types";
 import { ApiCallLogger, ApiCallLogEntry } from "twitter-api-sdk";
 import { log as consoleLog } from "./logger";
+import { __dirname } from "./esm-utils";
 
 class BaseStorage<T> {
   protected dataDir: string;
   
   constructor(subDir: string) {
-    this.dataDir = path.join(__dirname, "data", subDir);
+    this.dataDir = path.join(__dirname(import.meta.url), "data", subDir);
   }
 
   protected extractId(item: T): string { return (item as any).id; }
@@ -93,6 +94,11 @@ export class XApiCallLogger extends BaseStorage<ApiCallLogEntry> implements ApiC
     this.fileLogsEnabled = process.env.X_API_FILE_LOG !== "false";
   }
 
+  protected extractId(entry: ApiCallLogEntry): string {
+    const safe = entry.endpoint.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
+    return `${entry.timestamp.replace(/[:.]/g, '-')}_${safe}`;
+  }
+
   async log(entry: ApiCallLogEntry) {
     const tag = `x-api ${entry.method}`;
     const summary = `${entry.endpoint} → ${entry.status} (${entry.duration_ms}ms)`;
@@ -108,6 +114,44 @@ export class XApiCallLogger extends BaseStorage<ApiCallLogEntry> implements ApiC
   }
 }
 
+export interface UserPublicKeyEntry {
+  id: string; // user ID
+  public_key?: string;
+  signing_public_key?: string;
+  version?: string;
+  juicebox_config?: Record<string, any>;
+  cached_at: string;
+}
+
+export class UserPublicKeyStorage extends BaseStorage<UserPublicKeyEntry> {
+  constructor() { super('user-public-keys'); }
+}
+
+export interface ConversationKeyEntry {
+  id: string; // conversation ID
+  encrypted_conversation_key: string;
+  key_version?: string;
+  cached_at: string;
+}
+
+export class ConversationKeyStorage extends BaseStorage<ConversationKeyEntry> {
+  constructor() { super('conversation-keys'); }
+}
+
+export interface UserXChatEntry {
+  id: string; // user ID
+  /** 4-digit numeric PIN set by the user in the X app */
+  pin?: string;
+  /** Cached private key retrieved from Juicebox */
+  private_key?: string;
+  /** Signing key version from GET /2/users/{id}/public_keys */
+  signing_key_version?: string;
+}
+
+export class UserXChatStorage extends BaseStorage<UserXChatEntry> {
+  constructor() { super('user-xchat'); }
+}
+
 export class TokenHistoryStorage extends BaseStorage<TokenChangeEntry> {
   constructor() {
     super("token-history");
@@ -118,6 +162,49 @@ export class TokenHistoryStorage extends BaseStorage<TokenChangeEntry> {
   }
 
   async append(entry: TokenChangeEntry) {
+    await this.save(entry);
+  }
+}
+
+export interface JuiceboxCallLogEntry {
+  timestamp: string;
+  method: string;
+  url: string;
+  endpoint: string;
+  request_type?: string;
+  request_body?: any;
+  encoded_request?: any;
+  status: number;
+  response_body?: any;
+  encoded_response?: any;
+  duration_ms: number;
+  error?: string;
+}
+
+export interface JuiceboxCallLoggerInterface {
+  log(entry: JuiceboxCallLogEntry): void | Promise<void>;
+}
+
+export class JuiceboxCallLogger extends BaseStorage<JuiceboxCallLogEntry> implements JuiceboxCallLoggerInterface {
+  constructor() {
+    super("juicebox-requests");
+  }
+
+  protected extractId(entry: JuiceboxCallLogEntry): string {
+    const safe = entry.endpoint.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/^_+|_+$/g, '');
+    return `${entry.timestamp.replace(/[:.]/g, '-')}_${safe}`;
+  }
+
+  async log(entry: JuiceboxCallLogEntry) {
+    const tag = `juicebox ${entry.method}`;
+    const summary = `${entry.endpoint} [${entry.request_type}] → ${entry.status} (${entry.duration_ms}ms)`;
+
+    if (entry.status >= 400 || entry.error) {
+      consoleLog.error(tag, summary, entry.error || entry.response_body || "");
+    } else {
+      consoleLog.debug(tag, summary);
+    }
+
     await this.save(entry);
   }
 }

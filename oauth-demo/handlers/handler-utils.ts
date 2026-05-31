@@ -5,13 +5,14 @@ import { oauthFromIntegration } from "../oauth-utils";
 import { FileCache } from "../file-cache";
 import path from "path";
 import { apiLogger } from "../api-logger";
+import { __dirname } from "../esm-utils";
 
 const integrationStorage = new IntegrationStorage();
 const credentialsStorage = new CredentialsStorage();
 const accessTokenStorage = new AccessTokenStorage();
 
 export const mediaCache = new FileCache(
-  path.join(__dirname, "../data/media-cache"),
+  path.join(__dirname(import.meta.url), "../data/media-cache"),
   30 * 24 * 60 * 60 * 1000 // 30 days
 );
 
