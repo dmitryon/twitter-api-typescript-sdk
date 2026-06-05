@@ -3983,6 +3983,11 @@ export interface components {
         retweet_count: number;
       };
       /**
+       * @description Indicates if this Post is a paid partnership, i.e. it has been disclosed by the author as containing paid promotion.
+       * @example false
+       */
+      paid_partnership?: boolean;
+      /**
        * @description Indicates if this Tweet contains URLs marked as sensitive, for example content suitable for mature audiences.
        * @example false
        */
@@ -5336,6 +5341,7 @@ export interface components {
       | "note_request_suggestions"
       | "note_tweet"
       | "organic_metrics"
+      | "paid_partnership"
       | "possibly_sensitive"
       | "promoted_metrics"
       | "public_metrics"

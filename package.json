@@ -1,6 +1,6 @@
 {
   "name": "twitter-api-sdk",
-  "version": "2.164.0",
+  "version": "2.165.0",
   "description": "A TypeScript SDK for the Twitter API",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
