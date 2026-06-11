@@ -43,6 +43,14 @@ export interface paths {
     /** Deletes a subscription for an X activity event */
     delete: operations["deleteActivitySubscription"];
   };
+  "/2/articles/draft": {
+    /** Creates a new Article draft that can later be published. */
+    post: operations["articleCreateDraft"];
+  };
+  "/2/articles/{article_id}/publish": {
+    /** Publishes a draft Article, making it publicly visible. */
+    post: operations["articlePublish"];
+  };
   "/2/chat/conversations": {
     /** Retrieves a list of Chat conversations for the authenticated user's inbox. */
     get: operations["getChatConversations"];
@@ -660,6 +668,7 @@ export interface components {
         event_type?: string;
         event_uuid?: components["schemas"]["ActivityEventId"];
         filter?: components["schemas"]["ActivitySubscriptionFilter"];
+        includes?: components["schemas"]["Expansions"];
         payload?: components["schemas"]["ActivityStreamingResponsePayload"];
         tag?: string;
       };
@@ -668,7 +677,9 @@ export interface components {
     ActivityStreamingResponsePayload:
       | components["schemas"]["ProfileUpdateActivityResponsePayload"]
       | components["schemas"]["NewsActivityResponsePayload"]
-      | components["schemas"]["FollowActivityResponsePayload"];
+      | components["schemas"]["FollowActivityResponsePayload"]
+      | components["schemas"]["Tweet"]
+      | components["schemas"]["PostDeleteActivityResponsePayload"];
     /** @description An XActivity subscription. */
     ActivitySubscription: {
       /** Format: date-time */
@@ -704,7 +715,9 @@ export interface components {
         | "dm.sent"
         | "dm.received"
         | "dm.indicate_typing"
-        | "dm.read";
+        | "dm.read"
+        | "post.create"
+        | "post.delete";
       filter: components["schemas"]["ActivitySubscriptionFilter"];
       tag?: string;
       webhook_id?: components["schemas"]["WebhookConfigId"];
@@ -834,6 +847,122 @@ export interface components {
        * @description Number of rules for client application
        */
       rule_count?: number;
+    };
+    ArticleDraftCreateRequest: {
+      /** @description DraftJS content state representing the article body. */
+      content_state: {
+        /** @description The text blocks that make up the article body. */
+        blocks: {
+          /** @description Block-level metadata for mentions, hashtags, cashtags, and URLs. */
+          data?: { [key: string]: unknown };
+          /** @description Nesting depth for list items. */
+          depth?: number;
+          /** @description References to entries in entities. */
+          entity_ranges?: {
+            /** @description Index into the entities array. */
+            key: number;
+            /** @description Length of the entity range. */
+            length: number;
+            /** @description Start offset in the text. */
+            offset: number;
+          }[];
+          /** @description Inline formatting ranges. */
+          inline_style_ranges?: {
+            /** @description Length of the styled range. */
+            length: number;
+            /** @description Start offset in the text. */
+            offset: number;
+            /**
+             * @description The inline style.
+             * @enum {string}
+             */
+            style: "bold" | "italic" | "strikethrough";
+          }[];
+          /** @description Optional block key. */
+          key?: string;
+          /** @description The text content of this block. */
+          text: string;
+          /**
+           * @description The block type.
+           * @enum {string}
+           */
+          type:
+            | "unstyled"
+            | "header-one"
+            | "header-two"
+            | "header-three"
+            | "unordered-list-item"
+            | "ordered-list-item"
+            | "blockquote"
+            | "atomic";
+        }[];
+        /** @description Non-text entities referenced by blocks (links, embedded posts, images). */
+        entities: {
+          /** @description The entity key referenced by entity_ranges. */
+          key: string;
+          value: {
+            /** @description Entity payload. Fields depend on the entity type. */
+            data: {
+              /** @description Caption text. */
+              caption?: string;
+              /** @description Markdown content. */
+              markdown?: string;
+              /** @description Media keys. Used with type IMAGE. */
+              media_items?: {
+                /** @description The media category. */
+                media_category: string;
+                /** @description The media ID. */
+                media_id: string;
+              }[];
+              /** @description The ID of the post to embed. Used with type POST. */
+              post_id?: string;
+              /** @description The URL. Used with type LINK. */
+              url?: string;
+            };
+            /**
+             * @description Whether the entity can be edited.
+             * @enum {string}
+             */
+            mutability: "immutable" | "mutable" | "segmented";
+            /**
+             * @description The entity type.
+             * @enum {string}
+             */
+            type: "post" | "link" | "image";
+          };
+        }[];
+      };
+      /** @description Optional cover media for the article. */
+      cover_media?: {
+        /** @description The media category (e.g., TWEET_IMAGE). */
+        media_category: string;
+        /** @description The media ID from the media upload endpoint. */
+        media_id: string;
+      };
+      /** @description The title of the article. */
+      title: string;
+    };
+    ArticleDraftCreateResponse: {
+      /** @description The newly created draft Article. */
+      data?: {
+        id: components["schemas"]["ArticleId"];
+        /** @description The title of the draft Article. */
+        title: string;
+      };
+      errors?: components["schemas"]["Problem"][];
+    };
+    /**
+     * @description The unique identifier of this Article.
+     * @example 1146654567674912769
+     */
+    ArticleId: string;
+    ArticlePublishResponse: {
+      /** @description The published Article's seed post. */
+      data?: {
+        /** @description The ID of the post created for the published Article. */
+        post_id: string;
+      };
+      errors?: components["schemas"]["Problem"][];
     };
     AudiencePolicy: {
       creator_subscriptions?: "Any"[];
@@ -3323,6 +3452,11 @@ export interface components {
      * ]
      */
     Position: number[];
+    /** @description The identity of a deleted Post. */
+    PostDeleteActivityResponsePayload: {
+      author_id: components["schemas"]["UserId"];
+      id: components["schemas"]["TweetId"];
+    };
     PreviewImage: {
       media_key: {
         media?: components["schemas"]["MediaId"];
@@ -4999,6 +5133,16 @@ export interface components {
       | "user_profile_clicks"
     )[];
     /** @description A comma separated list of fields to expand. */
+    ArticleExpansionsParameter: "media_key"[];
+    /** @description A comma separated list of Article fields to display. */
+    ArticleFieldsParameter: (
+      | "id"
+      | "media_key"
+      | "plain_text"
+      | "preview_text"
+      | "title"
+    )[];
+    /** @description A comma separated list of fields to expand. */
     ChatConversationExpansionsParameter: (
       | "admin_ids"
       | "member_ids"
@@ -5670,6 +5814,54 @@ export interface operations {
       200: {
         content: {
           "application/json": components["schemas"]["ActivitySubscriptionDeleteResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+  };
+  /** Creates a new Article draft that can later be published. */
+  articleCreateDraft: {
+    parameters: {};
+    responses: {
+      /** The request has succeeded. */
+      201: {
+        content: {
+          "application/json": components["schemas"]["ArticleDraftCreateResponse"];
+        };
+      };
+      /** The request has failed. */
+      default: {
+        content: {
+          "application/json": components["schemas"]["Error"];
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ArticleDraftCreateRequest"];
+      };
+    };
+  };
+  /** Publishes a draft Article, making it publicly visible. */
+  articlePublish: {
+    parameters: {
+      path: {
+        /** The ID of the draft article to publish. */
+        article_id: string;
+      };
+    };
+    responses: {
+      /** The request has succeeded. */
+      200: {
+        content: {
+          "application/json": components["schemas"]["ArticlePublishResponse"];
         };
       };
       /** The request has failed. */
@@ -10563,6 +10755,8 @@ export type getActivitySubscriptions = operations['getActivitySubscriptions']
 export type createActivitySubscription = operations['createActivitySubscription']
 export type deleteActivitySubscription = operations['deleteActivitySubscription']
 export type updateActivitySubscription = operations['updateActivitySubscription']
+export type articleCreateDraft = operations['articleCreateDraft']
+export type articlePublish = operations['articlePublish']
 export type getChatConversations = operations['getChatConversations']
 export type createChatConversation = operations['createChatConversation']
 export type initializeChatGroup = operations['initializeChatGroup']

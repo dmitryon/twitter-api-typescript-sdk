@@ -29,6 +29,8 @@ import {
   createActivitySubscription,
   deleteActivitySubscription,
   updateActivitySubscription,
+  articleCreateDraft,
+  articlePublish,
   getChatConversations,
   createChatConversation,
   initializeChatGroup,
@@ -198,8 +200,8 @@ export class Client {
     auth: string | AuthClient,
     requestOptions?: Partial<RequestOptions>
   ) {
-    this.version = "2.165";
-    this.twitterApiOpenApiVersion = "2.165";
+    this.version = "2.166";
+    this.twitterApiOpenApiVersion = "2.166";
     this.#auth = typeof auth === "string" ? new OAuth2Bearer(auth) : auth;
     this.#defaultRequestOptions = {
       ...requestOptions,
@@ -210,6 +212,56 @@ export class Client {
     };
   }
 
+  /**
+   * Articles
+   *
+   * Endpoints related to retrieving, creating & modifying Articles
+   *
+   * Find out more
+   * https://developer.x.com/en/docs/twitter-api/tweets/lookup
+   */
+  public readonly articles = {
+    /**
+    * Create draft Article
+    *
+
+    * Creates a new Article draft that can later be published.
+    * @param request_body - The request_body for articleCreateDraft
+    * @param request_options - Customize the options for this request
+    */
+    articleCreateDraft: (
+      request_body: TwitterBody<articleCreateDraft>,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<articleCreateDraft>> =>
+      rest<TwitterResponse<articleCreateDraft>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/articles/draft`,
+        request_body,
+        method: "POST",
+      }),
+
+    /**
+    * Publish Article
+    *
+
+    * Publishes a draft Article, making it publicly visible.
+    * @param article_id - The ID of the draft article to publish.
+    * @param request_options - Customize the options for this request
+    */
+    articlePublish: (
+      article_id: string,
+      request_options?: Partial<RequestOptions>
+    ): Promise<TwitterResponse<articlePublish>> =>
+      rest<TwitterResponse<articlePublish>>({
+        auth: this.#auth,
+        ...this.#defaultRequestOptions,
+        ...request_options,
+        endpoint: `/2/articles/${article_id}/publish`,
+        method: "POST",
+      }),
+  };
   /**
    * Compliance
    *

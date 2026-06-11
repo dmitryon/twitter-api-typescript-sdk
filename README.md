@@ -14,7 +14,7 @@ You can find examples of using the client in the [examples/](examples/) director
 
 - Full type information for requests and responses
 - OAuth2 support
-- Supports Node.js 14+. **Doesn't work in browser environments due to the Twitter API not supporting CORS**
+- Supports Node.js 22+. **Doesn't work in browser environments due to the Twitter API not supporting CORS**
 
 ## Installing
 
@@ -166,18 +166,34 @@ Note this is only for developers who want to contribute code to the SDK
 git clone https://github.com/twitterdev/twitter-api-typescript-sdk
 ```
 
+### Upgrading to a New API Version
+
+1. Fetch the latest OpenAPI spec:
+```
+curl -o api_spec/openapi.json https://api.twitter.com/2/openapi.json
+```
+
+2. Run the generation script:
+```
+yarn generate
+```
+
+3. Update the version in `package.json` to match the spec version (e.g. `2.166.0`)
+
+4. Build and test:
+```
+yarn build
+yarn test
+```
+
 ### Running the Generation Script
 
-Generating the SDK with the [latest OpenAPI spec](https://api.twitter.com/2/openapi.json). The version is any valid [SemVer](https://semver.org/) version
+The generate script uses the local spec file at `api_spec/openapi.json` by default.
+
+To generate from a different local file:
 
 ```
-yarn generate 1.0.0
-```
-
-Generating the SDK with a local OpenAPI specification file.
-
-```
-yarn generate 1.0.0 --specFile ~/path/to/file/openapi.json
+yarn generate --specFile ~/path/to/file/openapi.json
 ```
 
 The files generated are put in the [src/gen](src/gen) directory, these files are not edited manually.
