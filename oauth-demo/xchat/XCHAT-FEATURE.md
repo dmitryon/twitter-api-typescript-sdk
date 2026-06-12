@@ -8,21 +8,23 @@
 
 1. **Chat Mode Selection** — When user clicks "💬 Chat", choose between Legacy DM or X Chat.
 
-2. **X Chat: PIN Management** — User provides their 4-digit numeric PIN (set in the X app). Stored on the integration. Used to retrieve the private key from Juicebox. Required before any chat operation.
+2. **X Chat: PIN Management** — User provides their 4-digit numeric PIN (set in the X app). Stored on the integration. Used to enroll the private key in Juicebox during registration and retrieve it during recovery. Required before any chat operation.
 
-3. **X Chat: List Conversations** — `GET /2/chat/conversations`
+3. **X Chat: Key Enrollment** — During initial setup, the client first checks if the user has any registered public keys via `GET /2/users/{id}/public_keys`. If the response is empty, it generates random P-256 key pairs, publishes public keys to X, and enrolls the private keys in Juicebox protected by the user's PIN. If keys already exist, enrollment is skipped.
 
-4. **X Chat: View Messages** — `GET /2/chat/conversations/{id}` (paginated, encrypted payloads displayed raw — decryption requires chat-xdk, Rust/Python only)
+4. **X Chat: List Conversations** — `GET /2/chat/conversations`
 
-5. **X Chat: Send Messages** — `POST /2/chat/conversations/{id}/messages`. Best-effort: base64-encoded plaintext JSON as `encoded_message_create_event` (real flow requires chat-xdk encryption).
+5. **X Chat: View Messages** — `GET /2/chat/conversations/{id}` (paginated, encrypted payloads displayed raw — decryption requires chat-xdk, Rust/Python only)
 
-6. **X Chat: Upload Media** — 3-step: initialize → append (chunked) → finalize → `media_hash_key`
+6. **X Chat: Send Messages** — `POST /2/chat/conversations/{id}/messages`. Best-effort: base64-encoded plaintext JSON as `encoded_message_create_event` (real flow requires chat-xdk encryption).
 
-7. **X Chat: Download Media** — `GET /2/chat/media/{id}/{media_hash_key}` or TON URL `https://ton.x.com/1.1/ton/data/xchat_media/{conversation_id}/{media_hash_key}`
+7. **X Chat: Upload Media** — 3-step: initialize → append (chunked) → finalize → `media_hash_key`
 
-8. **X Chat: Get User Public Keys** — `GET /2/users/{id}/public_keys`
+8. **X Chat: Download Media** — `GET /2/chat/media/{id}/{media_hash_key}` or TON URL `https://ton.x.com/1.1/ton/data/xchat_media/{conversation_id}/{media_hash_key}`
 
-9. **X Chat: Real-time Events (XAA)** — Subscribe to `chat.received` / `chat.sent` via `POST /2/activity/subscriptions` with `webhook_id`. Events arrive as webhook POSTs to the existing receiver, logged and broadcast via the same `webhookEventBus`, displayed in the "📨 Events" modal with a 🔐 icon.
+9. **X Chat: Get User Public Keys** — `GET /2/users/{id}/public_keys`
+
+10. **X Chat: Real-time Events (XAA)** — Subscribe to `chat.received` / `chat.sent` via `POST /2/activity/subscriptions` with `webhook_id`. Events arrive as webhook POSTs to the existing receiver, logged and broadcast via the same `webhookEventBus`, displayed in the "📨 Events" modal with a 🔐 icon.
 
 ### Non-Functional Requirements
 
@@ -30,6 +32,30 @@
 - XAA create/list: BearerToken, OAuth2, or OAuth1. XAA delete: BearerToken only.
 - PIN is 4 digits, stored on integration. Private key and conversation keys cached on integration. Never returned in API responses — only presence reported.
 - Legacy DM flow and Account Activity webhooks remain fully functional.
+
+### X Chat Enrollment Flow
+
+`registerKeys` is the central function for setting up X Chat for a user. It is called in the following scenarios:
+
+#### Triggering the Flow (UI)
+1.  **Initial Setup:** When a user opens X Chat for the first time and sets their 4-digit PIN. 
+    - `savePin()` (in `xchat.js`) saves the PIN to the server.
+    - Upon success, `checkPinAndShow()` detects that keys are missing and triggers `renderPinPrompt(true)`.
+    - Clicking "Save PIN" in the registration context eventually triggers `registerKeys()`.
+2.  **Missing Keys:** If a user has a PIN but no public keys are registered on the X server.
+    - `checkPinAndShow()` detects `needs_registration: true`.
+    - `renderRegistrationPrompt()` displays a button: "Generate & Register Keys".
+    - Clicking this button calls `XChatUI.registerKeys()`.
+
+#### Execution Logic (Backend)
+When `POST /integrations/:id/xchat/register` is called:
+1.  **Safety Check:** It first calls `GET /2/users/{id}/public_keys` to see if keys already exist.
+    - If keys are found, it skips enrollment and returns success. This prevents overwriting existing keys.
+2.  **Key Generation:** Generates two random P-256 key pairs (Decrypt and Signing).
+3.  **X Registration:** Publishes the public keys to X via `POST /2/users/{id}/public_keys`.
+    - Includes the `identity_public_key_signature` (proof of ownership).
+4.  **Juicebox Enrollment:** Enrolls the private keys in the Juicebox network, protected by the user's PIN.
+5.  **Local Storage:** Caches the private keys on the integration server for subsequent "unlocking".
 
 ### Encryption Stack
 
@@ -513,6 +539,16 @@ Variables (JSON-encoded string):
   }
 }
 ```
+
+**Signature Preimage:**
+`"AddXChatPublicKeyMutation,{decrypt_public_key_spki},{signing_public_key_spki}"`
+- **Algorithm:** ECDSA P-256 with SHA-256.
+- **Preimage Components:**
+    - `{decrypt_public_key_spki}`: The base64-encoded SPKI of the decryption public key.
+    - `{signing_public_key_spki}`: The base64-encoded SPKI of the signing public key.
+- **Signature Format:** Raw `r(32) || s(32)` (64 bytes), base64 encoded with padding.
+- **Key Used:** Signed using the user's **Signing Key**.
+- **Requirement:** The `public_key` field in the JSON matches `decrypt_public_key_spki`.
 
 Response includes `token_map` with auth tokens for all 3 realms (same format as recovery).
 

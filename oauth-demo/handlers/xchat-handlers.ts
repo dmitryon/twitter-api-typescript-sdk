@@ -4,11 +4,22 @@ import { rest } from "twitter-api-sdk";
 import { UserPublicKeyStorage, ConversationKeyStorage, UserXChatStorage, JuiceboxCallLogger } from "../storage";
 import { log } from "../logger";
 import { toCanonicalConvId, toApiConvId, extractRecipientId } from "../xchat/xchat-utils";
-import { encryptMessage, encryptReaction, encryptEdit, unwrapConversationKey, secretboxDecrypt, wrapConversationKey, getPublicKeyFromScalar, spkiToRawPublicKey } from "../xchat/chat-crypto";
+import {
+  encryptMessage,
+  encryptReaction,
+  encryptEdit,
+  unwrapConversationKey,
+  secretboxDecrypt,
+  wrapConversationKey,
+  getPublicKeyFromScalar,
+  spkiToRawPublicKey,
+  ecdsaSign,
+  getPublicKeySPKI
+} from "../xchat/chat-crypto";
 import { extractContentsFromMessageEvent, decodeMessageEntryHolder } from "../xchat/chat-thrift";
 import { decode } from "../xchat/thrift-codec";
 import { MessageEventSchema } from "../xchat/thrift-models";
-import { recover } from "../xchat/juicebox/client";
+import { recover, register as juiceboxRegister } from "../xchat/juicebox/client";
 import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
@@ -906,6 +917,25 @@ export const registerKeys = async (req: Request, res: Response) => {
       return;
     }
 
+    log.info('xchat', `[register] checking existing public keys for user ${userId}`);
+    try {
+      const existingKeys = await rest({
+        auth: resolved.authClient,
+        endpoint: `/2/users/${userId}/public_keys`,
+        method: 'GET',
+        params: { 'public_key.fields': 'version,public_key,signing_public_key' },
+      }) as any;
+
+      if (existingKeys.data && Array.isArray(existingKeys.data) && existingKeys.data.length > 0) {
+        log.info('xchat', `[register] user ${userId} already has ${existingKeys.data.length} keys registered, skipping enrollment`);
+        res.json({ success: true, message: "Keys already registered", keys: existingKeys.data });
+        return;
+      }
+    } catch (checkErr: any) {
+      log.warn('xchat', `[register] could not check existing keys: ${checkErr.message}`);
+      // Proceed with registration if check fails (safest bet)
+    }
+
     log.info('xchat', `[register] generating keys for user ${userId}`);
 
     // Step 1: Generate P-256 key pairs
@@ -920,31 +950,71 @@ export const registerKeys = async (req: Request, res: Response) => {
 
     // SPKI encode public keys
     const spkiPrefix = Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex');
-    const decryptPublicKeySPKI = Buffer.concat([spkiPrefix, decryptECDH.getPublicKey()]).toString('base64');
-    const signingPublicKeySPKI = Buffer.concat([spkiPrefix, signingECDH.getPublicKey()]).toString('base64');
+    const decryptPublicKeySPKI = getPublicKeySPKI(decryptScalar.toString('base64'));
+    const signingPublicKeySPKI = getPublicKeySPKI(signingScalar.toString('base64'));
 
     // Step 2: Publish public keys via REST API
     log.debug('xchat', `[register] publishing public keys to X API`);
     const version = String(Date.now());
+    
+    // Calculate identity_public_key_signature
+    const preimage = Buffer.from(`AddXChatPublicKeyMutation,${decryptPublicKeySPKI},${signingPublicKeySPKI}`);
+    const identity_public_key_signature = ecdsaSign(signingScalar.toString('base64'), preimage);
+
+    let juiceboxConfig: any = null;
     try {
       // Use the REST API endpoint for adding public keys
-      await rest({
+      const pkResp = await rest({
         auth: resolved.authClient,
         endpoint: `/2/users/${userId}/public_keys`,
         method: 'POST',
         request_body: {
           public_key: decryptPublicKeySPKI,
           signing_public_key: signingPublicKeySPKI,
+          identity_public_key_signature,
+          registration_method: "CustomPin",
           version,
         },
-      });
+      }) as any;
       log.info('xchat', `[register] public keys published (version=${version})`);
+      juiceboxConfig = pkResp.data?.juicebox_config;
     } catch (pkErr: any) {
       log.warn('xchat', `[register] public key publish failed (${pkErr.status || 'unknown'}): ${pkErr.message}`);
       // Continue anyway — keys may already be registered or endpoint may not exist
     }
 
-    // Step 3: Store keys locally (skip Juicebox registration for now if tokens unavailable)
+    // Step 3: Enroll in Juicebox if config available
+    if (juiceboxConfig) {
+      try {
+        log.info('xchat', `[register] enrolling keys in Juicebox for user ${userId}`);
+        await juiceboxRegister(xchat.pin, secret, JSON.stringify(juiceboxConfig), userId, juiceboxLogger);
+        log.info('xchat', `[register] Juicebox enrollment successful`);
+      } catch (jbErr: any) {
+        log.error('xchat', `[register] Juicebox enrollment failed:`, jbErr.message || jbErr);
+        // We still save the keys locally so the user can try again or use them
+      }
+    } else {
+      // If POST didn't return it, try to fetch it
+      try {
+        log.debug('xchat', `[register] fetching juicebox_config from public_keys endpoint`);
+        const pkData = await rest({
+          auth: resolved.authClient,
+          endpoint: `/2/users/${userId}/public_keys`,
+          method: 'GET',
+          params: { 'public_key.fields': 'version,public_key,signing_public_key,juicebox_config' },
+        }) as any;
+        const freshConfig = pkData.data?.find((k: any) => k.version === version)?.juicebox_config;
+        if (freshConfig) {
+          log.info('xchat', `[register] enrolling keys in Juicebox (fresh config) for user ${userId}`);
+          await juiceboxRegister(xchat.pin, secret, JSON.stringify(freshConfig), userId, juiceboxLogger);
+          log.info('xchat', `[register] Juicebox enrollment successful`);
+        }
+      } catch (fetchErr: any) {
+        log.warn('xchat', `[register] could not fetch juicebox_config for enrollment: ${fetchErr.message}`);
+      }
+    }
+
+    // Step 4: Store keys locally
     const keysJson = JSON.stringify({
       signingKeyB64: signingScalar.toString('base64'),
       decryptKeyB64: decryptScalar.toString('base64'),

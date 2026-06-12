@@ -585,7 +585,13 @@ GraphQL mutation to publish public keys to X's server:
 
 ### identity_public_key_signature
 
-The `identity_public_key_signature` field in `AddXChatPublicKeyMutation` is a signature proving the client owns the private key. Format and preimage TBD — likely ECDSA P-256 over some canonical representation of the public keys.
+The `identity_public_key_signature` field in `AddXChatPublicKeyMutation` is a signature proving the client owns the private key.
+
+- **Algorithm:** ECDSA P-256 with SHA-256
+- **Preimage:** `"AddXChatPublicKeyMutation,{decrypt_public_key_spki},{signing_public_key_spki}"`
+- **Signature:** Raw `r||s` (64 bytes) → base64 with padding.
+
+**Note**: The `registerKeys` handler in `xchat-handlers.ts` calculates this signature and automatically enrolls the generated keys in Juicebox using the user's PIN. This ensures the keys are backed up and can be recovered later. It is called from the UI whenever a user with no registered keys sets up their PIN or manually triggers registration.
 
 
 
