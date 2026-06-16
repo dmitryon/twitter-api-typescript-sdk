@@ -546,6 +546,26 @@ MessageEntryHolder {
 
 ## Juicebox Key Registration
 
+### Juicebox Registration Bugs Found & Fixed (2026-06-14)
+
+1. **OPRF keys must be Shamir-split, not independent.** Generating random OPRF key pairs per realm breaks recovery because Lagrange interpolation only works on polynomial shares. Fix: generate one master OPRF key, split with `splitScalar()`, distribute shares to realms. **Confirmed from Juicebox SDK Rust source** (`rust/sdk/src/register.rs`): `let oprf_private_key = oprf::PrivateKey::random(); let oprf_private_key_shares = create_shares(oprf_private_key, recover_threshold, share_count)`. The paper describes it abstractly as "each realm gets a random key" but the implementation splits a single master.
+
+2. **Encryption scalar must be reduced mod field order.** `bytesToBigIntLE(randomBytes(32))` can exceed the Ristretto255 order. `splitScalar` reduces it internally, but if the original unreduced value is used for `deriveEncryptionKey`, recovery (which gets the reduced value from interpolation) computes a different encryption key → "invalid tag" on decryption. Fix: reduce before use.
+
+3. **`ed25519.sign()` argument order is `(message, privateKey)`** in `@noble/curves`, not `(privateKey, message)`. Getting this wrong produces a confusing "secretKey expected 32 bytes, got 52" error (52 = size of the OPRF signature message).
+
+4. **`crypto.sign(null, hash, key)` ≠ `crypto.sign('sha256', data, key)` in Node.js.** The former signs the hash as raw data (no internal hashing). The latter hashes internally with SHA-256 then signs. They are mathematically different ECDSA operations. Our `ecdsaSign` (for message signatures) uses the former and works with the X server. The `identity_public_key_signature` requires the latter.
+
+5. **The Juicebox WASM module** (`383a8ef885a5b69ddfdd.module.wasm`, 2.9MB) is the open-source `juicebox-sdk` Rust crate compiled to WASM. Source: `github.com/juicebox-systems/juicebox-sdk`. Contains `struct OprfSignedPublicKey { public_key, verifying_key, signature }` confirming the 3-field structure. Uses `ed25519-compact` for signing, `ciborium` for CBOR, `argon2` for PIN hashing.
+
+### Conversation Key Rotation & Multi-Key Decryption (2026-06-14)
+
+- The API `meta.conversation_key_events` array contains ALL historical key versions for a conversation
+- Each key event can be decoded with the thrift `MessageEventSchema` → `conversationKeyChangeEvent.conversation_key_version` + `conversation_participant_keys[]`
+- Each `MessageCreateEvent` has `conversation_key_version` (field 101) identifying which key encrypted it
+- Decryption uses version-based lookup (O(1)), falling back to trying all keys if version not found
+- Group events (`group_create`, `group_member_add/remove`) and `conversationKeyChangeEvent` are now rendered in the UI alongside messages
+
 ### Registration vs Recovery
 
 - **Recovery** (`Recover1`/`Recover2`/`Recover3`): Retrieves existing secret using PIN. Requires `recover_threshold` (2 of 3) realms.
@@ -565,14 +585,41 @@ The registration is a **2-phase protocol** (not 3-phase like recovery):
 - Phase 2: Transport-encrypted `Register2` payload
 - Auth: Token in CBOR payload (`auth_token` field)
 
-### Register2 Payload Fields
+### Register2 Payload Fields (VERIFIED from HAR CBOR analysis)
 
 From the HAR capture, the `Register2` CBOR struct contains:
-- `version` — realm state version (from `realm_state` in token_map response)
+- `version` (16 bytes) — random registration version
 - `oprf_private_key` (32 bytes) — random Ristretto255 scalar
-- `oprf_signed_public_key` — struct with `public_key` (32 bytes) and `verifying_key` (32 bytes)
-- Encrypted secret data (the PIN-protected key material)
-- Policy/guess count configuration
+- `oprf_signed_public_key` — struct with THREE fields:
+  - `public_key` (32 bytes) — OPRF Ristretto255 public key
+  - `verifying_key` (32 bytes) — **Ed25519 public key** (NOT the same as oprf public key)
+  - `signature` (64 bytes) — **Ed25519 signature** over the OPRF public key
+- `unlock_key_commitment` (32 bytes)
+- `unlock_key_tag` (16 bytes)
+- `encryption_key_scalar_share` (32 bytes)
+- `encrypted_secret` (variable, ~143 bytes) — PIN-protected key material
+- `encrypted_secret_commitment` (16 bytes)
+- `policy` — `{ num_guesses: 20 }`
+
+### oprfVerifyingKey and oprfSignature (VERIFIED from CBOR structure)
+
+The X app generates a **separate Ed25519 key pair** per registration and uses it to sign the OPRF public key:
+
+1. Client generates OPRF key pair (Ristretto255 scalar + point)
+2. Client generates ephemeral Ed25519 key pair
+3. Client signs: `signature = Ed25519.sign(ed25519_priv, msg)`
+   where `msg = big_endian_u16(realmId.length) || realmId || u16(oprfPubKey.length) || oprfPubKey`
+4. Sends to realm: `{ public_key: oprfPub, verifying_key: ed25519Pub, signature }`
+5. On recovery, realm returns all three unchanged
+6. Client verifies: `Ed25519.verify(signature, msg, verifying_key)` — ensures realm didn't swap the OPRF public key
+
+**⚠️ BUG in our code** (`client.ts` line 95):
+```
+oprfVerifyingKey: oprfKeys[i].publicKey, // WRONG — just copies OPRF public key
+```
+Should: generate Ed25519 keypair, sign the OPRF public key per-realm, and include the signature in the Register2 payload. The `marshalRequest` in `realm.ts` also needs to include the `signature` field in `oprf_signed_public_key`.
+
+Our registration still works because realms accept whatever we send — but on recovery, the signature verification in `recoverPhase2` would fail if the realm returns our incorrect data. (Currently our recovery works because we registered with our own code and the verification passes vacuously.)
 
 ### AddXChatPublicKeyMutation
 
@@ -581,15 +628,62 @@ GraphQL mutation to publish public keys to X's server:
 - Input: `public_key` (SPKI), `signing_public_key` (SPKI), `identity_public_key_signature`, `registration_method: "CustomPin"`
 - Response: Returns `token_map` with fresh Juicebox auth tokens + assigned `version`
 
+**REST API equivalent:** `POST /2/users/{id}/public_keys` (operationId: `addUserPublicKey`) — exists in the OpenAPI spec and the typed client (`client.chat.addUserPublicKey()`), but returns **403 "client-not-enrolled"** with our OAuth2 tokens. Same access tier restriction as media download and typing indicators.
+
+```json
+// Request body (ChatAddPublicKeyRequest):
+{
+  "version": "1780151592870",
+  "generate_version": true,
+  "public_key": {
+    "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+    "signing_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...",
+    "identity_public_key_signature": "yo8J8r515+6FBJC6PhVsJlv8fyc3af8ICQ9gPDkZDgG8...",
+    "registration_method": "CustomPin"
+  }
+}
+
+// Response 403:
+{
+  "client_id": "28907132",
+  "detail": "When authenticating requests to the Twitter API v2 endpoints, you must use keys and tokens from a Twitter developer App that is attached to a Project. You can create a project via the developer portal.",
+  "title": "Client Forbidden",
+  "required_enrollment": "Appropriate Level of API Access",
+  "reason": "client-not-enrolled",
+  "type": "https://api.twitter.com/2/problems/client-forbidden"
+}
+```
+
+**Web client uses:** Bearer token `AAAAAAAAAAAAAAAAAAAAANRILgAA...` (app-level) + `x-csrf-token` + session cookies. Not available to OAuth2 API consumers.
+
+**Implication:** Key registration (new identity) cannot be performed from our demo app. Users must register their initial encryption keys from the X app itself. Our app can only recover/change PIN for already-registered keys.
+
 **Pitfall**: The `version` in the request is a client-generated timestamp, but the server may assign a different `version` in the response. Use the response version for subsequent operations.
 
-### identity_public_key_signature
+### identity_public_key_signature (VERIFIED from HAR + recovered keys)
 
-The `identity_public_key_signature` field in `AddXChatPublicKeyMutation` is a signature proving the client owns the private key.
+The `identity_public_key_signature` field in `AddXChatPublicKeyMutation` is a signature proving the client owns the signing private key.
 
 - **Algorithm:** ECDSA P-256 with SHA-256
-- **Preimage:** `"AddXChatPublicKeyMutation,{decrypt_public_key_spki},{signing_public_key_spki}"`
-- **Signature:** Raw `r||s` (64 bytes) → base64 with padding.
+- **Preimage:** Raw DER bytes of the decrypt (identity) public key in SPKI format (91 bytes)
+- **Signer:** The signing private key
+- **Signature:** Raw `r||s` (64 bytes) → base64 with padding
+- **Verification:** `crypto.verify('sha256', decrypt_pubkey_SPKI_DER, signing_public_key, signature)`
+
+**Verified** using user `hipposchweigt` (2060730035040829440) — recovered private keys from Juicebox match the HAR public keys, and the signature verifies against the raw DER bytes of the decrypt public key. See `scripts/verify-registration-crypto.ts`.
+
+**⚠️ BUG in our code** (`xchat-handlers.ts`): Our implementation uses the WRONG preimage:
+```
+// WRONG (current code):
+const preimage = Buffer.from(`AddXChatPublicKeyMutation,${decryptPublicKeySPKI},${signingPublicKeySPKI}`);
+const sig = ecdsaSign(signingScalar, preimage); // ecdsaSign does sign(null, sha256(preimage))
+
+// CORRECT (X app behavior):
+const preimage = Buffer.from(decryptPublicKeySPKI, 'base64'); // raw 91-byte DER
+const sig = crypto.sign('sha256', preimage, signingPrivKey); // → DER, then convert to r||s
+```
+
+The X server apparently accepts both formats (our registration works), but the correct format is just the raw DER bytes.
 
 **Note**: The `registerKeys` handler in `xchat-handlers.ts` calculates this signature and automatically enrolls the generated keys in Juicebox using the user's PIN. This ensures the keys are backed up and can be recovered later. It is called from the UI whenever a user with no registered keys sets up their PIN or manually triggers registration.
 
