@@ -8,6 +8,8 @@ import { EventBus } from "../event-bus";
 import { webhookDelayConfig } from "./webhook-config";
 import { __dirname } from "../esm-utils";
 import { unwrapConversationKey, secretboxDecrypt } from "../xchat/chat-crypto";
+import { decode } from "../xchat/thrift-codec";
+import { MessageEventSchema } from "../xchat/thrift-models";
 import { decodeMessageEntryHolder, extractContentsFromMessageEvent } from "../xchat/chat-thrift";
 
 const webhookLogDir = path.join(__dirname(import.meta.url), "../data/webhooks");
@@ -287,22 +289,10 @@ async function decryptXChatWebhook(body: any): Promise<any> {
 /** Extract our encrypted_conversation_key from a key_change_event */
 function getOurEncryptedKey(keyChangeEventB64: string, userId: string): string {
   const buf = Buffer.from(keyChangeEventB64, 'base64');
-  let searchPos = 0;
-  while (true) {
-    const idx = buf.indexOf(userId, searchPos);
-    if (idx === -1) break;
-    // Verify it's a proper thrift string (preceded by 4-byte length matching userId length)
-    if (idx >= 4 && buf.readInt32BE(idx - 4) === userId.length) {
-      const pos = idx + userId.length;
-      // Next field should be type=11 (string), id=2 (encrypted_conversation_key)
-      if (pos < buf.length - 7 && buf[pos] === 11 && buf.readInt16BE(pos + 1) === 2) {
-        const len = buf.readInt32BE(pos + 3);
-        return buf.subarray(pos + 7, pos + 7 + len).toString('utf8');
-      }
-    }
-    searchPos = idx + 1;
-  }
-  return '';
+  const event = decode(buf, MessageEventSchema);
+  const participants = event.detail?.conversationKeyChangeEvent?.conversation_participant_keys || [];
+  const ours = participants.find((pk: any) => pk.user_id === userId);
+  return ours?.encrypted_conversation_key || '';
 }
 
 /** Extract conversation key from a key_change_event using our decrypt key */
