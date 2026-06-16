@@ -45,10 +45,10 @@ async function resolveUserId(integrationId: string): Promise<string | null> {
 
 export const getXChatConversations = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { id: integrationId } = req.params;
     const { auth: authType } = req.query;
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) {
       res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
@@ -58,7 +58,7 @@ export const getXChatConversations = async (req: Request, res: Response) => {
       "chat_conversation.fields": ["id", "type", "participant_ids", "member_ids", "admin_ids", "group_name", "created_at", "updated_at"],
     });
 
-    log.debug('xchat', `Fetched conversations for integration ${id} (${response.data?.length || 0})`);
+    log.debug('xchat', `Fetched conversations for integration ${integrationId} (${response.data?.length || 0})`);
     res.json(response);
   } catch (error: any) {
     log.error('xchat', `getXChatConversations failed:`, error.message || error);
@@ -68,10 +68,10 @@ export const getXChatConversations = async (req: Request, res: Response) => {
 
 export const getXChatMessages = async (req: Request, res: Response) => {
   try {
-    const { id, conversationId } = req.params;
+    const { id: integrationId, conversationId } = req.params;
     const { auth: authType, pagination_token } = req.query;
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) {
       res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
@@ -81,7 +81,7 @@ export const getXChatMessages = async (req: Request, res: Response) => {
     const apiConvId = toApiConvId(conversationId);
 
     // Resolve user ID and keys for decryption
-    const userId = await resolveUserId(id);
+    const userId = await resolveUserId(integrationId);
     const keysResult = userId ? await ensureKeys(userId, resolved.client).catch(() => null) : null;
     const keys = keysResult?.private_key ? JSON.parse(keysResult.private_key) : null;
 
@@ -325,18 +325,18 @@ export const getXChatMessages = async (req: Request, res: Response) => {
 
 export const sendXChatMessage = async (req: Request, res: Response) => {
   try {
-    const { id, conversationId } = req.params;
+    const { id: integrationId, conversationId } = req.params;
     const { auth: authType } = req.query;
     const { text, media_hash_key, reply_to } = req.body;
     let { conversation_token, key_version, encrypted_conversation_key } = req.body;
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) {
       res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
     }
 
-    const userId = await resolveUserId(id);
+    const userId = await resolveUserId(integrationId);
     if (!userId) {
       res.status(400).json({ error: "Could not resolve user ID for integration" });
       return;
@@ -420,10 +420,10 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
 
 export const getUserPublicKeys = async (req: Request, res: Response) => {
   try {
-    const { id, userId } = req.params;
+    const { id: integrationId, userId } = req.params;
     const { auth: authType } = req.query;
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) {
       res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
@@ -453,10 +453,10 @@ export const getUserPublicKeys = async (req: Request, res: Response) => {
 
 export const uploadXChatMedia = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { id: integrationId } = req.params;
     const { auth: authType } = req.query;
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) {
       res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
@@ -522,7 +522,7 @@ export const uploadXChatMedia = async (req: Request, res: Response) => {
 
 export const proxyXChatMedia = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { id: integrationId } = req.params;
     const { auth: authType, conversation_id, media_hash_key } = req.query;
 
     if (!conversation_id || !media_hash_key) {
@@ -538,7 +538,7 @@ export const proxyXChatMedia = async (req: Request, res: Response) => {
       return;
     }
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) {
       res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
@@ -569,10 +569,10 @@ export const proxyXChatMedia = async (req: Request, res: Response) => {
 
 export const updateXChatSettings = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { id: integrationId } = req.params;
     const { pin, private_key, signing_key_version, conversation_key } = req.body;
 
-    const userId = await resolveUserId(id);
+    const userId = await resolveUserId(integrationId);
     if (!userId) {
       res.status(400).json({ error: "Could not resolve user ID — ensure OAuth2 is connected" });
       return;
@@ -602,7 +602,7 @@ export const updateXChatSettings = async (req: Request, res: Response) => {
       });
     }
 
-    log.info('xchat', `Updated xchat settings for user ${userId} (integration ${id})`);
+    log.info('xchat', `Updated xchat settings for user ${userId} (integration ${integrationId})`);
     const xchat = await userXChatStorage.load(userId);
     res.json({ success: true, xchat: { has_pin: !!xchat?.pin, has_private_key: !!xchat?.private_key } });
   } catch (error: any) {
@@ -613,10 +613,10 @@ export const updateXChatSettings = async (req: Request, res: Response) => {
 
 export const getXChatSettings = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { id: integrationId } = req.params;
     const { auth: authType } = req.query;
 
-    const userId = await resolveUserId(id);
+    const userId = await resolveUserId(integrationId);
     if (!userId) {
       res.json({ xchat: null });
       return;
@@ -636,7 +636,7 @@ export const getXChatSettings = async (req: Request, res: Response) => {
     let needsRegistration = false;
     if (hasPin) {
       try {
-        const resolved = await resolveAuth(id, authType as string || 'oauth2');
+        const resolved = await resolveAuth(integrationId, authType as string || 'oauth2');
         if (resolved) {
           const pkResp = await resolved.client.users.getUsersPublicKey(userId) as any;
           const keyEntry = Array.isArray(pkResp?.data) ? pkResp.data[0] : pkResp?.data;
@@ -688,13 +688,13 @@ async function ensureKeys(userId: string, client: any): Promise<{ private_key: s
 
 export const unlockKeys = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { id: integrationId } = req.params;
     const { auth: authType } = req.query;
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) { res.status(400).json({ error: "Integration not found or invalid auth" }); return; }
 
-    const userId = await resolveUserId(id);
+    const userId = await resolveUserId(integrationId);
     if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
 
     try {
@@ -718,7 +718,7 @@ export const unlockKeys = async (req: Request, res: Response) => {
 
 export const reactToMessage = async (req: Request, res: Response) => {
   try {
-    const { id, conversationId } = req.params;
+    const { id: integrationId, conversationId } = req.params;
     const { auth: authType } = req.query;
     const { message_sequence_id, emoji, remove } = req.body;
 
@@ -727,10 +727,10 @@ export const reactToMessage = async (req: Request, res: Response) => {
       return;
     }
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) { res.status(400).json({ error: "Invalid auth" }); return; }
 
-    const userId = await resolveUserId(id);
+    const userId = await resolveUserId(integrationId);
     if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
 
     const keysResult = await ensureKeys(userId, resolved.client);
@@ -765,7 +765,7 @@ export const reactToMessage = async (req: Request, res: Response) => {
 
 export const editMessage = async (req: Request, res: Response) => {
   try {
-    const { id, conversationId } = req.params;
+    const { id: integrationId, conversationId } = req.params;
     const { auth: authType } = req.query;
     const { message_sequence_id, text } = req.body;
 
@@ -774,10 +774,10 @@ export const editMessage = async (req: Request, res: Response) => {
       return;
     }
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) { res.status(400).json({ error: "Invalid auth" }); return; }
 
-    const userId = await resolveUserId(id);
+    const userId = await resolveUserId(integrationId);
     if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
 
     const keysResult = await ensureKeys(userId, resolved.client);
@@ -812,10 +812,10 @@ export const editMessage = async (req: Request, res: Response) => {
 
 export const sendTypingIndicator = async (req: Request, res: Response) => {
   try {
-    const { id, conversationId } = req.params;
+    const { id: integrationId, conversationId } = req.params;
     const { auth: authType } = req.query;
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) { res.status(400).json({ error: "Invalid auth" }); return; }
 
     const apiConvId = toApiConvId(conversationId);
@@ -829,16 +829,16 @@ export const sendTypingIndicator = async (req: Request, res: Response) => {
 
 export const registerKeys = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { id: integrationId } = req.params;
     const { auth: authType } = req.query;
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) {
       res.status(400).json({ error: "Integration not found or invalid auth" });
       return;
     }
 
-    const userId = await resolveUserId(id);
+    const userId = await resolveUserId(integrationId);
     if (!userId) {
       res.status(400).json({ error: "Could not resolve user ID" });
       return;
@@ -968,7 +968,7 @@ export const registerKeys = async (req: Request, res: Response) => {
 
 export const changePin = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const { id: integrationId } = req.params;
     const { auth: authType } = req.query;
     const { newPin } = req.body;
 
@@ -977,10 +977,10 @@ export const changePin = async (req: Request, res: Response) => {
       return;
     }
 
-    const resolved = await resolveAuth(id, authType as string);
+    const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) { res.status(400).json({ error: "Integration not found or invalid auth" }); return; }
 
-    const userId = await resolveUserId(id);
+    const userId = await resolveUserId(integrationId);
     if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
 
     // Fetch fresh juicebox_config (tokens expire)
