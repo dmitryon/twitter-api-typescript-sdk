@@ -301,9 +301,11 @@ window.XChatUI = (() => {
             let desc = '';
             if (ge.type === 'member_add') desc = `added ${(ge.member_ids || []).map(id => userCache[id]?.name || id).join(', ')}`;
             else if (ge.type === 'member_remove') desc = `${(ge.member_ids || []).map(id => userCache[id]?.name || id).join(', ')} left`;
-            else if (ge.type === 'title_change') desc = `changed group title to "${escapeHtml(ge.title || '')}"`;            return `<div class="xchat-message xchat-msg-event xchat-group-event">
+            else if (ge.type === 'title_change') desc = `changed group title to "${escapeHtml(ge.title || '')}"`;            else if (ge.type === 'group_create') desc = `created group with ${(ge.member_ids || []).map(id => userCache[id]?.name || id).join(', ')}`;
+            else if (ge.type === 'key_change') desc = `encryption key rotated`;            const icon = ge.type === 'key_change' ? '🔑' : '👥';
+            return `<div class="xchat-message xchat-msg-event xchat-group-event">
               <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''}</span>
-              👥 ${desc}
+              ${icon} ${desc}
             </div>`;
           }
           const replyHtml = m.reply_to ? `<div class="xchat-reply-preview"><span class="xchat-reply-sender">${m.reply_to.sender_display_name || m.reply_to.sender_id || ''}</span> ${escapeHtml(m.reply_to.message_text || '')}</div>` : '';
@@ -538,6 +540,8 @@ window.XChatUI = (() => {
         <div class="xchat-key-actions">
           <button class="btn btn-secondary btn-sm" onclick="XChatUI.resetPin()">🔑 Re-enter PIN</button>
           <button class="btn btn-secondary btn-sm" onclick="XChatUI.unlockKeys()">🔓 Unlock Keys</button>
+          <button class="btn btn-secondary btn-sm" onclick="XChatUI.showChangePin()">🔄 Change PIN</button>
+          <button class="btn btn-danger btn-sm" onclick="XChatUI.confirmReregister()" style="background:#dc3545;color:#fff">⚠️ New Identity</button>
         </div>
       </div>
       <div class="xchat-xaa-section">
@@ -659,6 +663,67 @@ window.XChatUI = (() => {
 
   function resetPin() {
     renderPinPrompt();
+  }
+
+  function showChangePin() {
+    const content = document.getElementById('xchatContent');
+    content.innerHTML = `
+      <div class="xchat-pin-section">
+        <h3>Change Juicebox PIN</h3>
+        <p class="hint">Enter a new 4-digit PIN to re-encrypt your keys on Juicebox.</p>
+        <input id="xchatNewPinInput" type="password" maxlength="4" pattern="[0-9]*" inputmode="numeric" placeholder="New PIN">
+        <button class="btn btn-primary" onclick="XChatUI.changePin()">Change PIN</button>
+        <button class="btn btn-secondary" onclick="XChatUI.showTab('xaa')">Cancel</button>
+      </div>
+    `;
+  }
+
+  function confirmReregister() {
+    if (!confirm('⚠️ WARNING: This will generate NEW encryption keys.\n\nYou will PERMANENTLY lose access to ALL previous encrypted conversations.\n\nAre you sure?')) return;
+    if (!confirm('⚠️ FINAL CONFIRMATION\n\nThis action is IRREVERSIBLE. All old messages will become unreadable.\n\nType OK in the next prompt to proceed.')) return;
+    const typed = prompt('Type RESET to confirm new identity generation:');
+    if (typed !== 'RESET') { alert('Cancelled.'); return; }
+    forceRegisterKeys();
+  }
+
+  async function forceRegisterKeys() {
+    const content = document.getElementById('xchatContent');
+    content.innerHTML = '<div class="loading">🔑 Generating NEW keys and registering with X...</div>';
+    try {
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/register?auth=${state.auth}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      content.innerHTML = '<div class="loading">✅ New identity registered! Old conversations are now unreadable.</div>';
+      setTimeout(() => showTab('xaa'), 2000);
+    } catch (e) {
+      alert(`Failed: ${e.message}`);
+      showTab('xaa');
+    }
+  }
+
+  async function changePin() {
+    const newPin = document.getElementById('xchatNewPinInput').value.trim();
+    if (!newPin || !/^[0-9]{4}$/.test(newPin)) { alert('New PIN must be exactly 4 digits'); return; }
+    const content = document.getElementById('xchatContent');
+    content.innerHTML = '<div class="loading">Changing PIN on Juicebox...</div>';
+    try {
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/change-pin?auth=${state.auth}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPin })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to change PIN');
+      content.innerHTML = '<div class="loading">✅ PIN changed successfully!</div>';
+      setTimeout(() => showTab('settings'), 1500);
+    } catch (e) {
+      alert(`Failed to change PIN: ${e.message}`);
+      showChangePin();
+    }
   }
 
   async function showNewChat() {
@@ -871,5 +936,5 @@ window.XChatUI = (() => {
     }
   }
 
-  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit, startReply, cancelReply };
+  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit, startReply, cancelReply, showChangePin, changePin, confirmReregister };
 })();
