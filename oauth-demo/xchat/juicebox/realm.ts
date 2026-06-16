@@ -32,6 +32,7 @@ export interface SecretsRequest {
     oprfPrivateKey: Uint8Array;
     oprfPublicKey: Uint8Array;
     oprfVerifyingKey: Uint8Array;
+    oprfSignature: Uint8Array;
     unlockKeyCommitment: Uint8Array;
     unlockKeyTag: Uint8Array;
     encryptionKeyScalarShare: Uint8Array;
@@ -52,6 +53,7 @@ function marshalRequest(req: SecretsRequest): Uint8Array {
     oprf_signed_public_key: {
       public_key: Buffer.from(req.register2.oprfPublicKey),
       verifying_key: Buffer.from(req.register2.oprfVerifyingKey),
+      signature: Buffer.from(req.register2.oprfSignature),
     },
     unlock_key_commitment: Buffer.from(req.register2.unlockKeyCommitment),
     unlock_key_tag: Buffer.from(req.register2.unlockKeyTag),

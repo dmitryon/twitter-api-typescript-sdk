@@ -4,6 +4,7 @@
  */
 
 import { ristretto255, ed25519 } from '@noble/curves/ed25519.js';
+import { randomBytes } from '@noble/hashes/utils.js';
 import crypto from 'crypto';
 import { hashPIN } from './pin.js';
 import { oprfStart, oprfFinalize, verifyDLEQProof, generateOPRFKeyPair, oprfEvaluate } from './oprf.js';
@@ -48,30 +49,36 @@ export async function register(pin: string, secret: Uint8Array, juiceboxConfigJs
   crypto.randomBytes(16).copy(Buffer.from(version.buffer));
   const { accessKey, encryptionKeySeed } = await hashPIN(pinBytes, config.pinHashingMode, version, userInfo);
 
-  // Generate OPRF key pair for each realm and compute unlock key
-  const oprfKeys = config.realms.map(() => generateOPRFKeyPair());
-
-  // Compute OPRF output by evaluating locally (we know the private key)
-  // For registration, we simulate the OPRF: hash input to point, multiply by private key, then finalize
-  const { blindingFactor, blindedInput } = oprfStart(accessKey);
-
-  // Evaluate OPRF for each realm and combine via Lagrange interpolation
-  const pointShares: PointShare[] = config.realms.map((r, i) => {
-    const evaluated = oprfEvaluate(blindedInput, oprfKeys[i].privateKey);
-    return {
-      index: shareIndex(config, r.id),
-      secret: ristretto255.Point.fromHex(bytesToHex(evaluated)),
-    };
+  // Generate a single OPRF key pair, then split the private key using Shamir
+  // so that any recoverThreshold realms can reconstruct the combined OPRF output
+  const indices = config.realms.map(r => shareIndex(config, r.id));
+  const masterOprfKey = generateOPRFKeyPair();
+  const masterOprfScalar = bytesToBigIntLE(masterOprfKey.privateKey);
+  const oprfScalarShares = splitScalar(masterOprfScalar, indices, config.recoverThreshold);
+  const oprfKeys = oprfScalarShares.map(share => {
+    const privBytes = bigIntToBytes32LE(share.secret);
+    const pubPoint = ristretto255.Point.BASE.multiply(share.secret);
+    return { privateKey: privBytes, publicKey: pubPoint.toBytes() };
   });
-  const combinedPoint = recoverPoint(pointShares.slice(0, config.recoverThreshold));
-  const oprfOutput = oprfFinalize(accessKey, blindingFactor, combinedPoint.toBytes());
+
+  // Generate a single Ed25519 keypair for OPRF public key signing (verifying_key)
+  const oprfSigningPrivKey = randomBytes(32);
+  const oprfVerifyingKey = ed25519.getPublicKey(oprfSigningPrivKey);
+
+  // Compute OPRF output using the master key directly (no interpolation needed during registration)
+  const { blindingFactor, blindedInput } = oprfStart(accessKey);
+  const masterEvaluated = oprfEvaluate(blindedInput, masterOprfKey.privateKey);
+  const oprfOutput = oprfFinalize(accessKey, blindingFactor, masterEvaluated);
 
   // Derive unlock key and commitment
   const { unlockKey, commitment: unlockKeyCommitment } = deriveUnlockKeyAndCommitment(oprfOutput);
 
   // Split encryption key scalar into shares
-  const randomScalar = bytesToBigIntLE(crypto.randomBytes(32));
-  const indices = config.realms.map(r => shareIndex(config, r.id));
+  // Note: reduce mod field order BEFORE deriving encryption key, since recovery
+  // will return the reduced value from Lagrange interpolation
+  const rawScalar = bytesToBigIntLE(crypto.randomBytes(32));
+  const ORDER = BigInt('7237005577332262213973186563042994240857116359379907606001950938285454250989');
+  const randomScalar = rawScalar % ORDER;
   const scalarShares = splitScalar(randomScalar, indices, config.recoverThreshold);
 
   // Derive encryption key from combined scalar
@@ -99,12 +106,17 @@ export async function register(pin: string, secret: Uint8Array, juiceboxConfigJs
       const unlockKeyTag = deriveUnlockKeyTag(unlockKey, r.id);
       const encSecretCommitment = deriveEncryptedUserSecretCommitment(unlockKey, r.id, scalarShareBytes, encryptedSecret);
 
+      // Sign the OPRF public key with the Ed25519 key, including realm ID in the message
+      const sigMsg = buildOprfSignatureMessage(r.id, oprfKeys[i].publicKey);
+      const oprfSignature = ed25519.sign(sigMsg, oprfSigningPrivKey);
+
       return realmClients[i].makeRequest({
         register2: {
           version,
           oprfPrivateKey: oprfKeys[i].privateKey,
           oprfPublicKey: oprfKeys[i].publicKey,
-          oprfVerifyingKey: oprfKeys[i].publicKey, // For now, same as public key
+          oprfVerifyingKey,
+          oprfSignature,
           unlockKeyCommitment: unlockKeyCommitment,
           unlockKeyTag,
           encryptionKeyScalarShare: scalarShareBytes,

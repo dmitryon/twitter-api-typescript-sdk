@@ -134,7 +134,7 @@ export async function secretboxDecrypt(nonceCiphertext: Buffer, key: Buffer): Pr
 // ECDSA P-256 signing
 // ---------------------------------------------------------------------------
 
-function ecdsaSign(privateKeyScalarB64: string, preimage: Buffer): string {
+export function ecdsaSign(privateKeyScalarB64: string, preimage: Buffer): string {
   const scalar = Buffer.from(privateKeyScalarB64, 'base64');
   const ecdh = crypto.createECDH('prime256v1');
   ecdh.setPrivateKey(scalar);
@@ -169,7 +169,46 @@ function ecdsaSign(privateKeyScalarB64: string, preimage: Buffer): string {
   return sig.toString('base64');
 }
 
-function getPublicKeySPKI(privateScalarB64: string): string {
+/**
+ * ECDSA P-256 sign with proper SHA-256 (crypto.sign('sha256', data, key)).
+ * Used for identity_public_key_signature where the preimage is raw bytes
+ * and the server expects standard ECDSA-SHA256 (not pre-hashed).
+ */
+export function ecdsaSignRaw(privateKeyScalarB64: string, data: Buffer): string {
+  const scalar = Buffer.from(privateKeyScalarB64, 'base64');
+  const ecdh = crypto.createECDH('prime256v1');
+  ecdh.setPrivateKey(scalar);
+
+  const key = crypto.createPrivateKey({
+    key: Buffer.concat([
+      Buffer.from('308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420', 'hex'),
+      scalar,
+      Buffer.from('a144034200', 'hex'),
+      ecdh.getPublicKey(),
+    ]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+
+  const derSig = crypto.sign('sha256', data, key);
+
+  // DER → raw r(32)||s(32)
+  let offset = 2;
+  offset++;
+  const rLen = derSig[offset++];
+  const r = derSig.subarray(offset, offset + rLen);
+  offset += rLen;
+  offset++;
+  const sLen = derSig[offset++];
+  const s = derSig.subarray(offset, offset + sLen);
+
+  const sig = Buffer.alloc(64);
+  r.copy(sig, 32 - Math.min(r.length, 32), Math.max(0, r.length - 32));
+  s.copy(sig, 64 - Math.min(s.length, 32), Math.max(0, s.length - 32));
+  return sig.toString('base64');
+}
+
+export function getPublicKeySPKI(privateScalarB64: string): string {
   const ecdh = crypto.createECDH('prime256v1');
   ecdh.setPrivateKey(Buffer.from(privateScalarB64, 'base64'));
   const spkiPrefix = Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex');
@@ -203,6 +242,31 @@ export interface EncryptMessageResult {
  * @param keyVersion - conversation key version
  * @param signingKeyVersion - public key version for signature
  */
+async function encryptAndSign(
+  keys: SigningKeyPair,
+  encryptedConvKeyB64: string,
+  plaintext: Buffer,
+  messageId: string,
+  senderId: string,
+  conversationId: string,
+  keyVersion: string,
+  signingKeyVersion: string,
+): Promise<EncryptMessageResult> {
+  const convKey = unwrapConversationKey(encryptedConvKeyB64, keys.decryptKeyB64);
+  const contentsBytes = await secretboxEncrypt(plaintext, convKey);
+  const mceThrift = encodeMessageCreateEvent(contentsBytes, keyVersion);
+  const encrypted_content = mceThrift.toString('base64');
+  const contentsB64NoPad = contentsBytes.toString('base64').replace(/=/g, '');
+  const preimage = Buffer.from(
+    `MessageCreateEvent,${messageId},${senderId},${conversationId},${keyVersion},${contentsB64NoPad}`
+  );
+  const signatureB64 = ecdsaSign(keys.signingKeyB64, preimage);
+  const signingPublicKeySPKI = getPublicKeySPKI(keys.signingKeyB64);
+  const sigThrift = encodeMessageEventSignature(signatureB64, signingKeyVersion, signingPublicKeySPKI);
+  const encoded_event_signature = sigThrift.toString('base64');
+  return { encrypted_content, encoded_event_signature };
+}
+
 export async function encryptMessage(
   keysJson: string,
   encryptedConvKeyB64: string,
@@ -215,38 +279,11 @@ export async function encryptMessage(
   replyTo?: ReplyTo,
 ): Promise<EncryptMessageResult> {
   const keys: SigningKeyPair = JSON.parse(keysJson);
-
-  // 1. Encode plaintext → thrift
   const plaintext = encodePlaintextPayload(text, replyTo);
-
-  // 2. Decrypt conversation key, encrypt with secretbox
-  const convKey = unwrapConversationKey(encryptedConvKeyB64, keys.decryptKeyB64);
-  const contentsBytes = await secretboxEncrypt(plaintext, convKey);
-
-  // 3. Encode MessageCreateEvent → base64
-  const mceThrift = encodeMessageCreateEvent(contentsBytes, keyVersion);
-  const encrypted_content = mceThrift.toString('base64');
-
-  // 4. Sign
-  const contentsB64NoPad = contentsBytes.toString('base64').replace(/=/g, '');
-  const preimage = Buffer.from(
-    `MessageCreateEvent,${messageId},${senderId},${conversationId},${keyVersion},${contentsB64NoPad}`
-  );
-  const signatureB64 = ecdsaSign(keys.signingKeyB64, preimage);
-
-  // 5. Encode MessageEventSignature → base64
-  const signingPublicKeySPKI = getPublicKeySPKI(keys.signingKeyB64);
-  const sigThrift = encodeMessageEventSignature(signatureB64, signingKeyVersion, signingPublicKeySPKI);
-  const encoded_event_signature = sigThrift.toString('base64');
-
-  return { encrypted_content, encoded_event_signature };
+  return encryptAndSign(keys, encryptedConvKeyB64, plaintext, messageId, senderId, conversationId, keyVersion, signingKeyVersion);
 }
 
 
-/**
- * Encrypt a reaction (add or remove) for the XChat API.
- * Same flow as encryptMessage but with reaction payload instead of text.
- */
 export async function encryptReaction(
   keysJson: string,
   encryptedConvKeyB64: string,
@@ -261,24 +298,9 @@ export async function encryptReaction(
 ): Promise<EncryptMessageResult> {
   const keys: SigningKeyPair = JSON.parse(keysJson);
   const plaintext = encodeReactionPayload(messageSequenceId, emoji, remove);
-  const convKey = unwrapConversationKey(encryptedConvKeyB64, keys.decryptKeyB64);
-  const contentsBytes = await secretboxEncrypt(plaintext, convKey);
-  const mceThrift = encodeMessageCreateEvent(contentsBytes, keyVersion);
-  const encrypted_content = mceThrift.toString('base64');
-  const contentsB64NoPad = contentsBytes.toString('base64').replace(/=/g, '');
-  const preimage = Buffer.from(
-    `MessageCreateEvent,${messageId},${senderId},${conversationId},${keyVersion},${contentsB64NoPad}`
-  );
-  const signatureB64 = ecdsaSign(keys.signingKeyB64, preimage);
-  const signingPublicKeySPKI = getPublicKeySPKI(keys.signingKeyB64);
-  const sigThrift = encodeMessageEventSignature(signatureB64, signingKeyVersion, signingPublicKeySPKI);
-  const encoded_event_signature = sigThrift.toString('base64');
-  return { encrypted_content, encoded_event_signature };
+  return encryptAndSign(keys, encryptedConvKeyB64, plaintext, messageId, senderId, conversationId, keyVersion, signingKeyVersion);
 }
 
-/**
- * Encrypt a message edit for the XChat API.
- */
 export async function encryptEdit(
   keysJson: string,
   encryptedConvKeyB64: string,
@@ -292,17 +314,5 @@ export async function encryptEdit(
 ): Promise<EncryptMessageResult> {
   const keys: SigningKeyPair = JSON.parse(keysJson);
   const plaintext = encodeEditPayload(messageSequenceId, updatedText);
-  const convKey = unwrapConversationKey(encryptedConvKeyB64, keys.decryptKeyB64);
-  const contentsBytes = await secretboxEncrypt(plaintext, convKey);
-  const mceThrift = encodeMessageCreateEvent(contentsBytes, keyVersion);
-  const encrypted_content = mceThrift.toString('base64');
-  const contentsB64NoPad = contentsBytes.toString('base64').replace(/=/g, '');
-  const preimage = Buffer.from(
-    `MessageCreateEvent,${messageId},${senderId},${conversationId},${keyVersion},${contentsB64NoPad}`
-  );
-  const signatureB64 = ecdsaSign(keys.signingKeyB64, preimage);
-  const signingPublicKeySPKI = getPublicKeySPKI(keys.signingKeyB64);
-  const sigThrift = encodeMessageEventSignature(signatureB64, signingKeyVersion, signingPublicKeySPKI);
-  const encoded_event_signature = sigThrift.toString('base64');
-  return { encrypted_content, encoded_event_signature };
+  return encryptAndSign(keys, encryptedConvKeyB64, plaintext, messageId, senderId, conversationId, keyVersion, signingKeyVersion);
 }
