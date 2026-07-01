@@ -835,6 +835,7 @@ export const unlockKeys = async (req: Request, res: Response) => {
   try {
     const { id: integrationId } = req.params;
     const { auth: authType } = req.query;
+    const force = req.query.force === '1';
 
     const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) { res.status(400).json({ error: "Integration not found or invalid auth" }); return; }
@@ -843,7 +844,7 @@ export const unlockKeys = async (req: Request, res: Response) => {
     if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
 
     try {
-      const result = await ensureKeys(userId, resolved.client);
+      const result = await ensureKeys(userId, resolved.client, { force });
       if (!result) {
         res.json({ success: true, unlocked: false, reason: "PIN not set or no public keys on server" });
         return;
@@ -851,6 +852,7 @@ export const unlockKeys = async (req: Request, res: Response) => {
       res.json({ success: true, unlocked: true, signing_key_version: result.signing_key_version });
     } catch (err: any) {
       log.warn('xchat', `[unlock] Juicebox recovery failed: ${err.message}`);
+      await keyRecoveryHistory.append({ userId, timestamp: new Date().toISOString(), success: false, error: err.message });
       res.json({ success: true, unlocked: false, reason: err.message });
     }
   } catch (error: any) {
@@ -1066,7 +1068,8 @@ export const registerKeys = async (req: Request, res: Response) => {
     if (juiceboxConfig) {
       try {
         log.info('xchat', `[register] enrolling keys in Juicebox for user ${userId}`);
-        await juiceboxRegister(xchat.pin, secret, JSON.stringify(juiceboxConfig), userId, juiceboxLogger);
+        const configJson = buildJuiceboxConfigJson(juiceboxConfig);
+        await juiceboxRegister(xchat.pin, secret, configJson, userId, juiceboxLogger);
         log.info('xchat', `[register] Juicebox enrollment successful`);
       } catch (jbErr: any) {
         log.error('xchat', `[register] Juicebox enrollment failed:`, jbErr.message || jbErr);
@@ -1082,7 +1085,8 @@ export const registerKeys = async (req: Request, res: Response) => {
         const freshConfig = pkData.data?.find((k: any) => k.version === version)?.juicebox_config;
         if (freshConfig) {
           log.info('xchat', `[register] enrolling keys in Juicebox (fresh config) for user ${userId}`);
-          await juiceboxRegister(xchat.pin, secret, JSON.stringify(freshConfig), userId, juiceboxLogger);
+          const configJson = buildJuiceboxConfigJson(freshConfig);
+          await juiceboxRegister(xchat.pin, secret, configJson, userId, juiceboxLogger);
           log.info('xchat', `[register] Juicebox enrollment successful`);
         }
       } catch (fetchErr: any) {

@@ -166,6 +166,31 @@ export class TokenHistoryStorage extends BaseStorage<TokenChangeEntry> {
   }
 }
 
+export interface KeyRecoveryEntry {
+  userId: string;
+  timestamp: string;
+  success: boolean;
+  recovered_key_version?: string;
+  error?: string;
+  previous_key_version?: string;
+  previous_key?: string;
+  recovered_key?: string;
+}
+
+export class KeyRecoveryHistoryStorage extends BaseStorage<KeyRecoveryEntry> {
+  constructor() {
+    super("key-recovery-history");
+  }
+
+  protected extractId(e: KeyRecoveryEntry) {
+    return `${e.userId}-${e.timestamp.replace(/[:.]/g, '-')}`;
+  }
+
+  async append(entry: KeyRecoveryEntry) {
+    await this.save(entry);
+  }
+}
+
 export interface JuiceboxCallLogEntry {
   timestamp: string;
   method: string;
