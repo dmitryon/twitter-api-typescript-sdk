@@ -497,23 +497,30 @@ window.XChatUI = (() => {
   async function loadXAASubscriptions() {
     const content = document.getElementById('xchatContent');
     content.innerHTML = '<div class="loading">Loading XAA subscriptions...</div>';
+    let subscriptions = [];
+    let subsError = null;
+    let settings = null;
     try {
       const [subsRes, settingsRes] = await Promise.all([
         fetch(`/integrations/${state.integrationId}/xaa/subscriptions?auth=${state.auth}`),
         fetch(`/integrations/${state.integrationId}/xchat/settings`)
       ]);
-      const subsData = await subsRes.json();
       const settingsData = await settingsRes.json();
-      if (!subsRes.ok) throw new Error(subsData.error || 'Failed to load');
-      renderXAASubscriptions(subsData.data || [], settingsData.xchat);
+      settings = settingsData.xchat;
+      const subsData = await subsRes.json();
+      if (!subsRes.ok) subsError = subsData.error || 'Failed to load subscriptions';
+      else subscriptions = subsData.data || [];
     } catch (e) {
-      content.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+      subsError = e.message;
     }
+    renderXAASubscriptions(subscriptions, settings, subsError);
   }
 
-  function renderXAASubscriptions(subscriptions, settings) {
+  function renderXAASubscriptions(subscriptions, settings, subsError) {
     const content = document.getElementById('xchatContent');
-    const subsList = subscriptions.length === 0
+    const subsList = subsError
+      ? `<div class="loading">⚠️ ${subsError}</div>`
+      : subscriptions.length === 0
       ? '<div class="loading">No active subscriptions</div>'
       : subscriptions.map(s => `
           <div class="xchat-subscription-item">
@@ -757,7 +764,7 @@ window.XChatUI = (() => {
     const content = document.getElementById('xchatContent');
     content.innerHTML = '<div class="loading">🔑 Fetching public keys and attempting unlock...</div>';
     try {
-      const res = await fetch(`/integrations/${state.integrationId}/xchat/unlock?auth=${state.auth}`, { method: 'POST' });
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/unlock?auth=${state.auth}&force=1`, { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Unlock failed');
       if (data.unlocked) {
@@ -766,7 +773,7 @@ window.XChatUI = (() => {
         content.innerHTML = `<div class="loading">⚠️ Unlock failed: ${data.reason || 'Unknown'}</div>`;
       }
       await new Promise(r => setTimeout(r, 2000));
-      showTab('xaa');
+      showTab('conversations');
     } catch (e) {
       content.innerHTML = `<div class="loading">❌ ${e.message}</div>`;
     }

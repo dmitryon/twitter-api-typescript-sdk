@@ -184,8 +184,9 @@ MessageEventSignature {
 
 - `POST /2/chat/conversations/{recipient_user_id}/messages` — pass recipient's user ID directly
 - The server constructs the canonical conversation ID
-- `POST /2/chat/conversations/{id}/keys` (initializeChatConversationKeys) — returned **404 in production** as of May 2026
-- Sending a properly encrypted message to a new recipient works without explicit key initialization
+- `POST /2/chat/conversations/{id}/keys` (initializeChatConversationKeys) — ~~returned 404 in production as of May 2026~~ **working as of July 2026**
+- Key initialization is required before sending the first message — without it, messages return 200 OK but are NOT committed
+- Flow: init keys → unwrap conversation key → encrypt message → send
 - The conversation key change event is delivered via webhook/XAA to the recipient
 
 ### Conversation Token
@@ -385,14 +386,16 @@ if (apiConvId.includes('-')) {
 When starting a new chat from the follower list, the conversation ID IS the recipient's user ID (no dash) — works directly.
 
 
-### New Conversation Key Exchange is Broken (as of May 2026)
+### ~~New Conversation Key Exchange is Broken (as of May 2026)~~ Fixed July 2026
 
-- `POST /2/chat/conversations/{id}/keys` (initializeChatConversationKeys) returns **404** in production
-- The documented workflow (init keys → send message) cannot be completed
-- Without key initialization, `POST /messages` returns 200 OK but the message does NOT appear in `GET /events` — the server accepts but doesn't commit it
-- The recipient never receives the conversation key, so even if the message were delivered, they couldn't decrypt it
-- **Workaround**: Only reply to conversations initiated by the other party (via X app), where the key change event is delivered via webhook/XAA or included in the `/events` response metadata (`conversation_key_events`)
-- The X app handles key exchange internally through a different mechanism (possibly WebSocket/GraphQL mutation, not REST API)
+~~- `POST /2/chat/conversations/{id}/keys` (initializeChatConversationKeys) returns **404** in production~~
+~~- The documented workflow (init keys → send message) cannot be completed~~
+~~- Without key initialization, `POST /messages` returns 200 OK but the message does NOT appear in `GET /events` — the server accepts but doesn't commit it~~
+~~- The recipient never receives the conversation key, so even if the message were delivered, they couldn't decrypt it~~
+~~- **Workaround**: Only reply to conversations initiated by the other party (via X app), where the key change event is delivered via webhook/XAA or included in the `/events` response metadata (`conversation_key_events`)~~
+~~- The X app handles key exchange internally through a different mechanism (possibly WebSocket/GraphQL mutation, not REST API)~~
+
+**Update (2026-07-01):** The endpoint now works. See the "Conversation Key Initialization" section below for the working flow.
 
 
 ### Conversation ID Format: Colons vs Dashes
@@ -430,25 +433,9 @@ The media upload endpoints return **503 Service Unavailable**:
 The migration guide explicitly states these are "NOT YET IN PROD. COMING SOON."
 
 
-### X Chat Media Download Requires Higher Access Level
+### X Chat Media Download
 
 Docs: https://docs.x.com/enterprise-api/chat/download-chat-media#download-chat-media
-
-`GET /2/chat/media/{id}/{media_hash_key}` returns **403 Forbidden** regardless of ID format (recipient user ID, dash-separated, or colon-separated):
-
-```json
-{
-  "client_id": "28907132",
-  "detail": "When authenticating requests to the Twitter API v2 endpoints, you must use keys and tokens from a Twitter developer App that is attached to a Project. You can create a project via the developer portal.",
-  "registration_url": "https://developer.twitter.com/en/docs/projects/overview",
-  "title": "Client Forbidden",
-  "required_enrollment": "Appropriate Level of API Access",
-  "reason": "client-not-enrolled",
-  "type": "https://api.twitter.com/2/problems/client-forbidden"
-}
-```
-
-This endpoint requires a developer app attached to a Project with appropriate access level. Standard OAuth2 tokens are not sufficient.
 
 The endpoint accepts three ID formats per the docs:
 1. Recipient user ID for 1:1 (e.g. `1215441834412953600`) — server constructs canonical ID from authenticated user + recipient
@@ -457,23 +444,32 @@ The endpoint accepts three ID formats per the docs:
 
 Pattern: `^([0-9]{1,19}|[0-9]{1,19}-[0-9]{1,19}|g[0-9]{1,19})$`
 
-Despite being documented, the endpoint returns 403 "client-not-enrolled" for our OAuth2 tokens even with Enterprise tier access. Likely not yet implemented or requires additional whitelisting from X's side.
+#### ~~Previously broken (tested 2026-05-31): 403 Forbidden~~
 
-Tested 2026-05-31:
+~~`GET /2/chat/media/{id}/{media_hash_key}` returned **403 Forbidden** regardless of ID format:~~
 ```
 GET /2/chat/media/2055579677322792960-2055625073969508352/uyRoQX6YK0 → 403 (171ms)
 {
   "client_id": "28907132",
-  "detail": "When authenticating requests to the Twitter API v2 endpoints, you must use keys and tokens from a Twitter developer App that is attached to a Project. You can create a project via the developer portal.",
-  "registration_url": "https://developer.twitter.com/en/docs/projects/overview",
   "title": "Client Forbidden",
   "required_enrollment": "Appropriate Level of API Access",
-  "reason": "client-not-enrolled",
-  "type": "https://api.twitter.com/2/problems/client-forbidden"
+  "reason": "client-not-enrolled"
 }
 ```
 
-The Go bridge (`mautrix-twitter`) downloads media via the TON URL (`https://ton.x.com/1.1/ton/data/xchat_media/{conversation_id}/{media_hash_key}`) using web session cookies, not the REST API.
+#### Working (2026-07-01)
+
+The endpoint now works with OAuth2 tokens. Media is returned as **encrypted bytes** using libsodium's `crypto_secretstream_xchacha20poly1305` (NOT plain secretbox).
+
+Decryption flow:
+1. Download raw bytes from `GET /2/chat/media/{id}/{media_hash_key}`
+2. Decrypt using `secretstreamDecrypt(encryptedBytes, conversationKey)` — the conversation key is the same 32-byte key used for message encryption
+3. Format: header (24 bytes) + chunks of 1041 bytes (1024 plaintext + 17 overhead per chunk)
+4. Detect content type from magic bytes of decrypted output
+
+Implementation: `proxyXChatMedia` handler in `xchat-handlers.ts` uses `secretstreamDecryptAsync` from `xchat/secretstream.ts` (built on `libsodium-wrappers` package).
+
+The Go bridge (`mautrix-twitter`) downloads media via the TON URL (`https://ton.x.com/1.1/ton/data/xchat_media/{conversation_id}/{media_hash_key}`) using web session cookies — this is an alternative path that also works.
 
 
 ## Media Types (from Go reference)
@@ -560,7 +556,7 @@ MessageEntryHolder {
 
 ### Conversation Key Rotation & Multi-Key Decryption (2026-06-14)
 
-- The API `meta.conversation_key_events` array contains ALL historical key versions for a conversation
+- The API response `meta.conversation_key_events` array (from `GET /2/chat/conversations/{id}/events`) contains ALL historical key versions for a conversation. Only included in the initial request (not when fetching subsequent pages via `pagination_token`). Not present if no key exchange has occurred in the conversation yet.
 - Each key event can be decoded with the thrift `MessageEventSchema` → `conversationKeyChangeEvent.conversation_key_version` + `conversation_participant_keys[]`
 - Each `MessageCreateEvent` has `conversation_key_version` (field 101) identifying which key encrypted it
 - Decryption uses version-based lookup (O(1)), falling back to trying all keys if version not found
@@ -628,7 +624,7 @@ GraphQL mutation to publish public keys to X's server:
 - Input: `public_key` (SPKI), `signing_public_key` (SPKI), `identity_public_key_signature`, `registration_method: "CustomPin"`
 - Response: Returns `token_map` with fresh Juicebox auth tokens + assigned `version`
 
-**REST API equivalent:** `POST /2/users/{id}/public_keys` (operationId: `addUserPublicKey`) — exists in the OpenAPI spec and the typed client (`client.chat.addUserPublicKey()`), but returns **403 "client-not-enrolled"** with our OAuth2 tokens. Same access tier restriction as media download and typing indicators.
+**REST API equivalent:** `POST /2/users/{id}/public_keys` (operationId: `addUserPublicKey`) — ~~returned 403 "client-not-enrolled" as of May 2026~~ **working as of July 2026**.
 
 ```json
 // Request body (ChatAddPublicKeyRequest):
@@ -642,8 +638,15 @@ GraphQL mutation to publish public keys to X's server:
     "registration_method": "CustomPin"
   }
 }
+```
 
-// Response 403:
+Key registration can now be performed entirely from our demo app via the REST API — no need for the X web client or GraphQL mutation.
+
+#### ~~Previously broken (tested May 2026): 403 Forbidden~~
+
+~~The endpoint returned 403 "client-not-enrolled" with our OAuth2 tokens. Same access tier restriction as media download and typing indicators.~~
+```
+// Response 403 (May 2026):
 {
   "client_id": "28907132",
   "detail": "When authenticating requests to the Twitter API v2 endpoints, you must use keys and tokens from a Twitter developer App that is attached to a Project. You can create a project via the developer portal.",
@@ -654,9 +657,9 @@ GraphQL mutation to publish public keys to X's server:
 }
 ```
 
-**Web client uses:** Bearer token `AAAAAAAAAAAAAAAAAAAAANRILgAA...` (app-level) + `x-csrf-token` + session cookies. Not available to OAuth2 API consumers.
+~~**Web client uses:** Bearer token `AAAAAAAAAAAAAAAAAAAAANRILgAA...` (app-level) + `x-csrf-token` + session cookies. Not available to OAuth2 API consumers.~~
 
-**Implication:** Key registration (new identity) cannot be performed from our demo app. Users must register their initial encryption keys from the X app itself. Our app can only recover/change PIN for already-registered keys.
+~~**Implication:** Key registration (new identity) cannot be performed from our demo app. Users must register their initial encryption keys from the X app itself. Our app can only recover/change PIN for already-registered keys.~~
 
 **Pitfall**: The `version` in the request is a client-generated timestamp, but the server may assign a different `version` in the response. Use the response version for subsequent operations.
 
@@ -925,3 +928,45 @@ Decoded thrift `detail.conversationKeyChangeEvent`:
 ```
 
 **Note:** The `conversation_key_change_event` is a separate event (different sequence ID) from the `group_member_add` event, but they share the same `conversation_key_version`. The key change event always precedes the group change event chronologically.
+
+### `POST /2/chat/conversations/{id}/keys` — Conversation Key Initialization
+
+The OpenAPI spec states that `POST /2/chat/conversations/{id}/keys` accepts a recipient user ID for 1:1 conversations (same as `/events` and `/messages` endpoints), and that "this is the first step before sending messages in a new 1:1 conversation."
+
+#### ~~Previously broken (tested 2026-06-24): 404~~
+
+~~The endpoint returned **404** for new conversations that have no prior message history, regardless of the ID format used:~~
+- ~~Recipient user ID only: `POST /2/chat/conversations/2055579677322792960/keys` → 404~~
+- ~~Full sender-recipient: `POST /2/chat/conversations/2060730035040829440-2055579677322792960/keys` → 404~~
+- ~~Canonical lower-first: `POST /2/chat/conversations/2055579677322792960-2060730035040829440/keys` → 404~~
+
+#### Working (2026-07-01)
+
+The endpoint now works correctly. Passing the **recipient user ID** as the conversation ID initiates key exchange for a new 1:1 conversation:
+
+```
+POST /2/chat/conversations/2060730035040829440/keys → 200 (237ms)
+```
+
+Response includes the initialized key version and participant count. After key initialization, `POST /messages` successfully commits the message (appears in `GET /events`).
+
+Full working flow for new conversations:
+1. Detect no cached conversation key for the recipient
+2. `POST /2/chat/conversations/{recipientId}/keys` — initializes key exchange, returns key version + participant keys
+3. Unwrap our conversation key from the response (same ECDH + KDF2 + AES-128-GCM flow)
+4. Cache the key with canonical ID (`smallerId:largerId`, BigInt-sorted)
+5. Encrypt message with secretbox using the new conversation key
+6. `POST /2/chat/conversations/{recipientId}/messages` — message is committed
+7. `GET /2/chat/conversations/{recipientId}/events` — confirms message appears
+
+**Important**: The canonical conversation key ID must be constructed as `smallerId:largerId` (numerically sorted using BigInt comparison), even when the API call uses just the recipient ID. This ensures cache lookups work correctly for subsequent messages.
+
+### No way to distinguish encrypted vs legacy conversations from conversation metadata (2026-06-24)
+
+The `GET /2/chat/conversations` response does not include any field indicating whether a conversation is encrypted. Available fields are: `admin_ids`, `created_at`, `group_avatar_url`, `group_name`, `id`, `is_muted`, `member_ids`, `message_ttl_msec`, `participant_ids`, `screen_capture_blocking_enabled`, `screen_capture_detection_enabled`, `type`, `updated_at` — none of which indicate encryption status.
+
+The only way to determine if a conversation is encrypted is to fetch events via `GET /2/chat/conversations/{id}/events` and check for the presence of `meta.conversation_key_events` in the response. If present, the conversation has had a key exchange and messages are encrypted. If absent, either:
+1. The conversation is a legacy (unencrypted) DM conversation, or
+2. No key exchange has occurred yet (new conversation between enrolled users)
+
+There is no `is_encrypted` field. Fields like `screen_capture_blocking_enabled` and `screen_capture_detection_enabled` are defined in the OpenAPI spec and can be requested, but are not returned even for known-encrypted conversations.
