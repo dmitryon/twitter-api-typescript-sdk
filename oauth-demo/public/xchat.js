@@ -278,7 +278,7 @@ window.XChatUI = (() => {
     const messagesHtml = errorMsg
       ? `<div class="xchat-error-msg">⚠️ Could not load messages: ${errorMsg.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`
       : state.messages.length === 0
-      ? '<div class="loading">No messages yet. Messages will appear here when received via webhook.</div>'
+      ? '<div class="loading">No messages yet. Send a message to start the conversation.</div>'
       : state.messages.map(m => {
           const isSelf = m.sender_id === state.userId;
           // Standalone reaction (parent not in page)

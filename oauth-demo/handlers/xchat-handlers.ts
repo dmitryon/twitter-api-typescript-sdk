@@ -360,7 +360,13 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
 
     const message_id = crypto.randomUUID();
     const apiConvId = toApiConvId(conversationId);
-    const convKeyId = toCanonicalConvId(conversationId);
+    // For 1:1 chats, ensure convKeyId is the full canonical format (smallerId:largerId)
+    // When starting a new chat, conversationId may be just the recipient's user ID
+    let convKeyId = toCanonicalConvId(conversationId);
+    if (!convKeyId.startsWith('g') && !convKeyId.includes(':')) {
+      const ids = [userId, convKeyId].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+      convKeyId = `${ids[0]}:${ids[1]}`;
+    }
 
     // Resolve missing conversation_token, key_version, and conversation key from cache or API
     const convKeyEntry = await conversationKeyStorage.load(convKeyId);
@@ -369,35 +375,94 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
 
     if (!conversation_token || !encryptedConvKey || !key_version) {
       log.debug('xchat', `[send] fetching events to resolve missing params (token=${!!conversation_token}, key=${!!encryptedConvKey}, version=${!!key_version})`);
-      const eventsResp = await resolved.client.chat.getChatConversationEvents(apiConvId, { max_results: 1 }) as any;
+      try {
+        const eventsResp = await resolved.client.chat.getChatConversationEvents(apiConvId, { max_results: 1 }) as any;
 
-      // Get conversation_token from the latest event
-      if (!conversation_token && eventsResp.data?.length) {
-        conversation_token = eventsResp.data[0].conversation_token;
-      }
-
-      // Extract conversation key from meta.conversation_key_events
-      if ((!encryptedConvKey || !key_version) && eventsResp.meta?.conversation_key_events?.length) {
-        for (const keyEventB64 of eventsResp.meta.conversation_key_events) {
-          try {
-            const keyBuf = Buffer.from(keyEventB64, 'base64');
-            const keyEvent = decode(keyBuf, MessageEventSchema);
-            const kce = keyEvent.detail?.conversationKeyChangeEvent;
-            if (!kce) continue;
-            const ours = (kce.conversation_participant_keys || []).find((pk: any) => pk.user_id === userId);
-            if (!ours?.encrypted_conversation_key) continue;
-            encryptedConvKey = ours.encrypted_conversation_key;
-            key_version = kce.conversation_key_version || key_version;
-            await conversationKeyStorage.save({ id: convKeyId, encrypted_conversation_key: encryptedConvKey, key_version: key_version || '', cached_at: new Date().toISOString() });
-            break;
-          } catch {}
+        // Get conversation_token from the latest event
+        if (!conversation_token && eventsResp.data?.length) {
+          conversation_token = eventsResp.data[0].conversation_token;
         }
+
+        // Extract conversation key from meta.conversation_key_events
+        if ((!encryptedConvKey || !key_version) && eventsResp.meta?.conversation_key_events?.length) {
+          for (const keyEventB64 of eventsResp.meta.conversation_key_events) {
+            try {
+              const keyBuf = Buffer.from(keyEventB64, 'base64');
+              const keyEvent = decode(keyBuf, MessageEventSchema);
+              const kce = keyEvent.detail?.conversationKeyChangeEvent;
+              if (!kce) continue;
+              const ours = (kce.conversation_participant_keys || []).find((pk: any) => pk.user_id === userId);
+              if (!ours?.encrypted_conversation_key) continue;
+              encryptedConvKey = ours.encrypted_conversation_key;
+              key_version = kce.conversation_key_version || key_version;
+              await conversationKeyStorage.save({ id: convKeyId, encrypted_conversation_key: encryptedConvKey, key_version: key_version || '', cached_at: new Date().toISOString() });
+              break;
+            } catch {}
+          }
+        }
+      } catch (eventsErr: any) {
+        // New conversation — no events exist yet, proceed to key initialization
+        log.debug('xchat', `[send] getChatConversationEvents failed (${eventsErr.status || 'unknown'}), likely new conversation`);
       }
     }
 
     if (!encryptedConvKey) {
-      res.status(400).json({ error: "No conversation key available. Cannot encrypt message." });
-      return;
+      // No key exchange has happened yet — initialize conversation keys
+      log.info('xchat', `[send] no conversation key found, initializing key exchange for ${apiConvId}`);
+
+      // Determine participant IDs
+      let participantIds: string[];
+      if (convKeyId.startsWith('g')) {
+        // Group: fetch conversation to get member list
+        const convResp = await resolved.client.chat.getChatConversation(apiConvId, {
+          "chat_conversation.fields": ["member_ids", "participant_ids"],
+        }) as any;
+        const members = convResp.data?.member_ids || convResp.data?.participant_ids || [];
+        participantIds = [...new Set([userId, ...members])];
+      } else {
+        // 1:1: extract from conversation ID
+        const recipientId = extractRecipientId(convKeyId, userId);
+        participantIds = [userId, recipientId];
+      }
+
+      // Generate random conversation key
+      const newConvKey = crypto.randomBytes(32);
+      const newKeyVersion = String(Date.now());
+
+      // Wrap for each participant using their public key
+      const conversationParticipantKeys: { user_id: string; encrypted_conversation_key: string; public_key_version: string }[] = [];
+      for (const pid of participantIds) {
+        let pkEntry = await userPublicKeyStorage.load(pid);
+        if (!pkEntry?.public_key) {
+          const pkResp = await resolved.client.users.getUsersPublicKey(pid) as any;
+          const entry = Array.isArray(pkResp?.data) ? pkResp.data[pkResp.data.length - 1] : pkResp?.data;
+          if (!entry?.public_key) {
+            res.status(400).json({ error: `Participant ${pid} has no public key (not enrolled in X Chat)` });
+            return;
+          }
+          pkEntry = { id: pid, public_key: entry.public_key, signing_public_key: entry.signing_public_key, version: entry.version };
+          await userPublicKeyStorage.save({ ...pkEntry, juicebox_config: entry.juicebox_config ?? entry.token_map, cached_at: new Date().toISOString() });
+        }
+        const wrapped = wrapConversationKey(newConvKey, spkiToRawPublicKey(pkEntry.public_key));
+        conversationParticipantKeys.push({ user_id: pid, encrypted_conversation_key: wrapped, public_key_version: pkEntry.version || '' });
+      }
+
+      // Initialize keys on the API
+      const recipientId = extractRecipientId(convKeyId, userId);
+      await resolved.client.chat.initializeChatConversationKeys(
+        convKeyId.startsWith('g') ? apiConvId : recipientId,
+        {
+          conversation_key_version: newKeyVersion,
+          conversation_participant_keys: conversationParticipantKeys,
+        }
+      );
+
+      // Use our own wrapped key for encryption
+      const ours = conversationParticipantKeys.find(pk => pk.user_id === userId)!;
+      encryptedConvKey = ours.encrypted_conversation_key;
+      key_version = newKeyVersion;
+      await conversationKeyStorage.save({ id: convKeyId, encrypted_conversation_key: encryptedConvKey, key_version: newKeyVersion, cached_at: new Date().toISOString() });
+      log.info('xchat', `[send] initialized conversation key (version=${newKeyVersion}, participants=${participantIds.length})`);
     }
 
     log.debug('xchat', `[send] encrypting message (key_version=${key_version})`);
