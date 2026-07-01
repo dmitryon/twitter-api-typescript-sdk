@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { resolveAuth, mediaCache, sseResponse, integrationStorage, accessTokenStorage } from "./handler-utils";
 import { rest } from "twitter-api-sdk";
-import { UserPublicKeyStorage, ConversationKeyStorage, UserXChatStorage, JuiceboxCallLogger } from "../storage";
+import { UserPublicKeyStorage, ConversationKeyStorage, UserXChatStorage, JuiceboxCallLogger, KeyRecoveryHistoryStorage } from "../storage";
 import { log } from "../logger";
 import { toCanonicalConvId, toApiConvId, extractRecipientId } from "../xchat/xchat-utils";
 import {
@@ -21,6 +21,7 @@ import { extractContentsFromMessageEvent, decodeMessageEntryHolder } from "../xc
 import { decode } from "../xchat/thrift-codec";
 import { MessageEventSchema } from "../xchat/thrift-models";
 import { recover, register as juiceboxRegister } from "../xchat/juicebox/client";
+import { secretstreamDecryptAsync, secretstreamEncryptAsync } from "../xchat/secretstream";
 import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
@@ -30,10 +31,19 @@ const userPublicKeyStorage = new UserPublicKeyStorage();
 const conversationKeyStorage = new ConversationKeyStorage();
 const userXChatStorage = new UserXChatStorage();
 const juiceboxLogger = new JuiceboxCallLogger();
+const keyRecoveryHistory = new KeyRecoveryHistoryStorage();
 
 // Ensure storage directories exist
-Promise.all([userPublicKeyStorage.init(), conversationKeyStorage.init(), userXChatStorage.init(), juiceboxLogger.init()]).catch(() => {});
+Promise.all([userPublicKeyStorage.init(), conversationKeyStorage.init(), userXChatStorage.init(), juiceboxLogger.init(), keyRecoveryHistory.init()]).catch(() => {});
 
+/** Transform raw juicebox_config from API into the format expected by the Juicebox client. */
+function buildJuiceboxConfigJson(jbConfig: any): string {
+  const tokens: Record<string, string> = {};
+  if (jbConfig.token_map && Array.isArray(jbConfig.token_map)) {
+    for (const t of jbConfig.token_map) tokens[t.key] = t.value?.token ?? t.value;
+  }
+  return JSON.stringify({ sdk_config: jbConfig.key_store_token_map_json, tokens, max_guess_count: jbConfig.max_guess_count });
+}
 /** Resolve the OAuth2 user ID for an integration. */
 async function resolveUserId(integrationId: string): Promise<string | null> {
   const integration = await integrationStorage.load(integrationId);
@@ -463,8 +473,31 @@ export const uploadXChatMedia = async (req: Request, res: Response) => {
     }
 
     const { media, conversation_id } = req.body;
-    const mediaBuffer = Buffer.from(media, 'base64');
+    const plaintextBuffer = Buffer.from(media, 'base64');
     const sendEvent = sseResponse(res);
+
+    // Encrypt media with conversation key using secretstream
+    const canonicalId = toCanonicalConvId(conversation_id);
+    const userId = await resolveUserId(integrationId);
+    const keysResult = userId ? await ensureKeys(userId, resolved.client).catch(() => null) : null;
+    const keys = keysResult?.private_key ? JSON.parse(keysResult.private_key) : null;
+
+    let mediaBuffer: Buffer;
+    if (keys?.decryptKeyB64) {
+      const convKeyEntry = await conversationKeyStorage.load(canonicalId);
+      if (convKeyEntry?.encrypted_conversation_key) {
+        const convKey = unwrapConversationKey(convKeyEntry.encrypted_conversation_key, keys.decryptKeyB64);
+        sendEvent({ step: 'encrypting', detail: `${plaintextBuffer.length} bytes` });
+        mediaBuffer = await secretstreamEncryptAsync(plaintextBuffer, convKey);
+        log.debug('xchat', `Media encrypted: ${plaintextBuffer.length} → ${mediaBuffer.length} bytes`);
+      } else {
+        log.warn('xchat', `No conversation key for ${canonicalId}, uploading unencrypted`);
+        mediaBuffer = plaintextBuffer;
+      }
+    } else {
+      log.warn('xchat', `No decrypt key available, uploading unencrypted`);
+      mediaBuffer = plaintextBuffer;
+    }
 
     // Step 1: Initialize
     sendEvent({ step: 'init', detail: `${mediaBuffer.length} bytes` });
@@ -554,18 +587,61 @@ export const proxyXChatMedia = async (req: Request, res: Response) => {
       return;
     }
 
-    const contentType = response.headers.get('content-type') || 'application/octet-stream';
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const encryptedBuffer = Buffer.from(await response.arrayBuffer());
 
-    await mediaCache.set(cacheKey, buffer, contentType);
+    // XChat media is encrypted with the conversation key using secretbox
+    const canonicalId = toCanonicalConvId(conversation_id as string);
+    const userId = await resolveUserId(integrationId);
+    const keysResult = userId ? await ensureKeys(userId, resolved.client).catch(() => null) : null;
+    const keys = keysResult?.private_key ? JSON.parse(keysResult.private_key) : null;
+
+    let decryptedBuffer: Buffer;
+    if (keys?.decryptKeyB64) {
+      const convKeyEntry = await conversationKeyStorage.load(canonicalId);
+      if (convKeyEntry?.encrypted_conversation_key) {
+        try {
+          const convKey = unwrapConversationKey(convKeyEntry.encrypted_conversation_key, keys.decryptKeyB64);
+          decryptedBuffer = await secretstreamDecryptAsync(encryptedBuffer, convKey);
+        } catch (decErr: any) {
+          log.warn('xchat', `Media decryption failed for ${media_hash_key}: ${decErr.message}`);
+          decryptedBuffer = encryptedBuffer;
+        }
+      } else {
+        log.warn('xchat', `No conversation key for ${canonicalId}, serving raw media`);
+        decryptedBuffer = encryptedBuffer;
+      }
+    } else {
+      log.warn('xchat', `No decrypt key available, serving raw media`);
+      decryptedBuffer = encryptedBuffer;
+    }
+
+    // Detect content type from decrypted bytes
+    let contentType = response.headers.get('content-type') || 'application/octet-stream';
+    if (decryptedBuffer !== encryptedBuffer) {
+      const detected = detectContentType(decryptedBuffer);
+      if (detected) contentType = detected;
+    }
+
+    await mediaCache.set(cacheKey, decryptedBuffer, contentType);
 
     res.set('Content-Type', contentType);
-    res.send(buffer);
+    res.send(decryptedBuffer);
   } catch (error: any) {
     log.error('xchat', `Media proxy failed:`, error.message || error);
     res.status(error.status || 500).json({ error: error.message || "Unknown error" });
   }
 };
+
+function detectContentType(buf: Buffer): string | null {
+  if (buf.length < 4) return null;
+  if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png';
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif';
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 && buf.length > 11 && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'image/webp';
+  if (buf.length > 11 && buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return 'video/mp4';
+  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return 'application/pdf';
+  return null;
+}
 
 export const updateXChatSettings = async (req: Request, res: Response) => {
   try {
@@ -656,10 +732,13 @@ export const getXChatSettings = async (req: Request, res: Response) => {
 };
 
 /** Ensure user's private keys are available — from cache or by recovering from Juicebox with PIN. */
-async function ensureKeys(userId: string, client: any): Promise<{ private_key: string; signing_key_version: string } | null> {
+async function ensureKeys(userId: string, client: any, { force = false } = {}): Promise<{ private_key: string; signing_key_version: string } | null> {
   const xchat = await userXChatStorage.load(userId);
-  if (xchat?.private_key) return { private_key: xchat.private_key, signing_key_version: xchat.signing_key_version || '' };
+  if (!force && xchat?.private_key) return { private_key: xchat.private_key, signing_key_version: xchat.signing_key_version || '' };
   if (!xchat?.pin) return null;
+
+  const previousKey = xchat.private_key || undefined;
+  const previousKeyVersion = xchat.signing_key_version || undefined;
 
   // Fetch fresh juicebox_config
   const pkData = await client.users.getUsersPublicKey(userId, {
@@ -682,6 +761,7 @@ async function ensureKeys(userId: string, client: any): Promise<{ private_key: s
   const private_key = JSON.stringify({ signingKeyB64, decryptKeyB64, keyVersion: signingKeyVersion });
 
   await userXChatStorage.save({ ...xchat, private_key, signing_key_version: signingKeyVersion });
+  await keyRecoveryHistory.append({ userId, timestamp: new Date().toISOString(), success: true, recovered_key_version: signingKeyVersion, previous_key_version: previousKeyVersion, previous_key: previousKey, recovered_key: private_key });
   log.info('xchat', `[ensureKeys] recovered and cached keys for user ${userId}`);
   return { private_key, signing_key_version: signingKeyVersion };
 }
