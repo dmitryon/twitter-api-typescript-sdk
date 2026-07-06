@@ -87,8 +87,9 @@ export interface paths {
   };
   "/2/chat/conversations/{id}/keys": {
     /**
-     * Initializes encryption keys for a Chat conversation. This is the first step
-     * before sending messages in a new 1:1 conversation.
+     * Adds (initializes or rotates) the encryption keys for a Chat conversation.
+     * Call this before sending messages in a new 1:1 conversation, and again with a
+     * newer key version to rotate the conversation key.
      *
      * For 1:1 conversations, provide the recipient's user ID as the conversation_id.
      * The server constructs the canonical conversation ID from the authenticated user
@@ -97,17 +98,20 @@ export interface paths {
      * The request body must contain the conversation key version and participant keys
      * (the conversation key encrypted for each participant using their public key).
      *
-     * **Workflow (1:1 conversation):**
+     * **Workflow (new 1:1 conversation):**
      * 1. Generate a conversation key using the SDK
      * 2. Encrypt the key for both participants using their public keys
      * 3. Call this endpoint to register the keys
      * 4. Send messages using `POST /chat/conversations/{id}/messages`
      *
+     * To rotate the keys of an existing conversation, repeat the same call with a
+     * newer conversation key version.
+     *
      * **Authentication:**
      * - Requires OAuth 1.0a User Context or OAuth 2.0 User Context
      * - Required scopes: `tweet.read`, `users.read`, `dm.write`
      */
-    post: operations["initializeChatConversationKeys"];
+    post: operations["addConversationKeys"];
   };
   "/2/chat/conversations/{id}/members": {
     /** Adds one or more members to an existing encrypted Chat group conversation, rotating the conversation key. */
@@ -679,7 +683,8 @@ export interface components {
       | components["schemas"]["NewsActivityResponsePayload"]
       | components["schemas"]["FollowActivityResponsePayload"]
       | components["schemas"]["Tweet"]
-      | components["schemas"]["PostDeleteActivityResponsePayload"];
+      | components["schemas"]["PostDeleteActivityResponsePayload"]
+      | components["schemas"]["LikeWithTweetAuthor"];
     /** @description An XActivity subscription. */
     ActivitySubscription: {
       /** Format: date-time */
@@ -717,7 +722,9 @@ export interface components {
         | "dm.indicate_typing"
         | "dm.read"
         | "post.create"
-        | "post.delete";
+        | "post.delete"
+        | "post.mention.create"
+        | "like.create";
       filter: components["schemas"]["ActivitySubscriptionFilter"];
       tag?: string;
       webhook_id?: components["schemas"]["WebhookConfigId"];
@@ -854,9 +861,44 @@ export interface components {
         /** @description The text blocks that make up the article body. */
         blocks: {
           /** @description Block-level metadata for mentions, hashtags, cashtags, and URLs. */
-          data?: { [key: string]: unknown };
-          /** @description Nesting depth for list items. */
-          depth?: number;
+          data?: {
+            /** @description Cashtag spans in this block. */
+            cashtags?: {
+              /** @description Start index of the tagged span. */
+              from_index: number;
+              /** @description The tagged text. */
+              text: string;
+              /** @description End index of the tagged span. */
+              to_index: number;
+            }[];
+            /** @description Hashtag spans in this block. */
+            hashtags?: {
+              /** @description Start index of the tagged span. */
+              from_index: number;
+              /** @description The tagged text. */
+              text: string;
+              /** @description End index of the tagged span. */
+              to_index: number;
+            }[];
+            /** @description Mention spans in this block. */
+            mentions?: {
+              /** @description Start index of the tagged span. */
+              from_index: number;
+              /** @description The tagged text. */
+              text: string;
+              /** @description End index of the tagged span. */
+              to_index: number;
+            }[];
+            /** @description URL spans in this block. */
+            urls?: {
+              /** @description Start index of the tagged span. */
+              from_index: number;
+              /** @description The tagged text. */
+              text: string;
+              /** @description End index of the tagged span. */
+              to_index: number;
+            }[];
+          };
           /** @description References to entries in entities. */
           entity_ranges?: {
             /** @description Index into the entities array. */
@@ -905,18 +947,20 @@ export interface components {
             data: {
               /** @description Caption text. */
               caption?: string;
+              /** @description Opaque entity key. */
+              entity_key?: string;
               /** @description Markdown content. */
               markdown?: string;
-              /** @description Media keys. Used with type IMAGE. */
+              /** @description Media keys. Used with type image. */
               media_items?: {
-                /** @description The media category. */
+                /** @description The media category (e.g., TWEET_IMAGE). */
                 media_category: string;
-                /** @description The media ID. */
+                /** @description The media ID from the media upload endpoint. */
                 media_id: string;
               }[];
-              /** @description The ID of the post to embed. Used with type POST. */
+              /** @description The ID of the post to embed. Used with type post. */
               post_id?: string;
-              /** @description The URL. Used with type LINK. */
+              /** @description The URL. Used with type link. */
               url?: string;
             };
             /**
@@ -932,7 +976,7 @@ export interface components {
           };
         }[];
       };
-      /** @description Optional cover media for the article. */
+      /** @description A reference to uploaded media, identified by category and ID. */
       cover_media?: {
         /** @description The media category (e.g., TWEET_IMAGE). */
         media_category: string;
@@ -1013,14 +1057,27 @@ export interface components {
       /** @example TWTR */
       tag: string;
     };
+    /** @description Message event signature supplied with an action signature. */
+    ChatActionMessageEventSignature: {
+      /** @description List of signing key information for message verification. */
+      message_signing_key_info_list?: components["schemas"]["ChatMessageSigningKeyInfo"][];
+      /** @description The version of the public key used for signing. */
+      public_key_version: string;
+      /** @description The signature of the message event. */
+      signature: string;
+      /** @description The version of the signature algorithm. */
+      signature_version: string;
+      /** @description The public key used for signing. */
+      signing_public_key?: string;
+    };
     /** @description Cryptographic signature for a chat action. */
     ChatActionSignature: {
       /** @description Base64-encoded message event detail. */
-      encoded_message_event_detail?: string;
-      message_event_signature?: components["schemas"]["ChatMessageEventSignature"];
-      /** @description ID of the message being signed. */
-      message_id?: string;
-      /** @description Cryptographic signature payload. */
+      encoded_message_event_detail: string;
+      message_event_signature: components["schemas"]["ChatActionMessageEventSignature"];
+      /** @description Client-generated ID of the message being signed. */
+      message_id: string;
+      /** @description Payload string the client signed; used only in server-side failure logs. */
       signature_payload?: string;
     };
     ChatAddGroupMembersRequest: {
@@ -1065,7 +1122,7 @@ export interface components {
       version: string;
     };
     ChatAddPublicKeyResponse: {
-      data?: components["schemas"]["ChatPublicKey"];
+      data?: components["schemas"]["PublicKey"];
       errors?: components["schemas"]["Problem"][];
     };
     /** @description A Chat conversation resource representing either a direct or group conversation. */
@@ -1078,7 +1135,7 @@ export interface components {
       group_avatar_url?: string;
       /** @description Encrypted group name. Only present for group conversations. */
       group_name?: string;
-      /** @description The unique identifier for this conversation. */
+      /** @description The unique identifier for this conversation: the hyphen-separated participant pair for a 1:1 conversation (e.g. '123-456'), or a 'g'-prefixed ID for a group. */
       id: string;
       /** @description Whether notifications are muted for this conversation. */
       is_muted?: boolean;
@@ -1140,7 +1197,7 @@ export interface components {
     };
     ChatCreateConversationResponse: {
       data?: {
-        /** @description The ID of the created conversation. */
+        /** @description The ID of the created group conversation (prefixed with 'g'). */
         conversation_id?: string;
         /** @description Sequence ID of the conversation key change event, if applicable. */
         conversation_key_change_sequence_id?: string;
@@ -1190,6 +1247,8 @@ export interface components {
     };
     ChatInitializeConversationKeysResponse: {
       data?: {
+        /** @description Canonical ID of the conversation the keys were added to: the hyphen-joined participant pair for a one-to-one (for example `123-456`), or the g-prefixed ID for a group. Use this ID for subsequent requests and to match conversation events. */
+        conversation_id?: string;
         /** @description Sequence ID of the conversation key change event. Use this to track key changes in the conversation event stream. */
         sequence_id?: string;
       };
@@ -1208,11 +1267,11 @@ export interface components {
       key_store_token_map_json?: string;
       /** @description Maximum guess count for key recovery. */
       max_guess_count?: number;
-      /** @description Serialized realm state for key recovery. */
+      /** @description Serialized realm state for key recovery. Only returned when registering a key. */
       realm_state_string?: string;
-      /** @description Threshold required to recover the key. */
+      /** @description Threshold required to recover the key. Only returned when registering a key. */
       recover_threshold?: number;
-      /** @description Threshold required to register the key. */
+      /** @description Threshold required to register the key. Only returned when registering a key. */
       register_threshold?: number;
       /** @description Per-realm auth tokens for key recovery. */
       token_map?: {
@@ -1222,7 +1281,7 @@ export interface components {
         value?: {
           /** @description Realm URL. */
           address?: string;
-          /** @description Realm public key. */
+          /** @description Realm public key. Only returned when registering a key. */
           public_key?: string;
           /** @description JWT auth token for the realm. */
           token?: string;
@@ -1290,7 +1349,7 @@ export interface components {
     ChatMediaUploadInitializeResponse: {
       data?: {
         /**
-         * @description Conversation id associated with the upload.
+         * @description Conversation ID associated with the upload: the colon-separated participant pair for a 1:1 conversation, or a 'g'-prefixed ID for a group.
          * @example 1603419216513746946:1603419216513746946
          */
         conversation_id: string;
@@ -1308,7 +1367,7 @@ export interface components {
     };
     /** @description An Chat message event with extracted envelope fields and the original encoded event. */
     ChatMessageEvent: {
-      /** @description The conversation ID this message belongs to. */
+      /** @description The conversation ID this message belongs to, in the form embedded in events: the colon-separated participant pair for a 1:1 conversation (e.g. '123:456'), or a 'g'-prefixed ID for a group. */
       conversation_id?: string;
       /** @description The conversation token for this message. */
       conversation_token?: string;
@@ -1349,18 +1408,6 @@ export interface components {
       public_key_version?: string;
       /** @description The signing public key. */
       signing_public_key?: string;
-    };
-    /** @description A user's public key with associated key recovery configuration. */
-    ChatPublicKey: {
-      /** @description DER-encoded signature proving the signing key is bound to the identity key (base64 encoded). */
-      identity_public_key_signature?: string;
-      juicebox_config?: components["schemas"]["ChatJuiceboxConfig"];
-      /** @description Identity public key (base64 encoded). */
-      public_key?: string;
-      /** @description Signing public key (base64 encoded). */
-      signing_public_key?: string;
-      /** @description Public key version. */
-      version?: string;
     };
     ChatSendMessageRequest: {
       /** @description Optional conversation token. */
@@ -3501,32 +3548,17 @@ export interface components {
       after?: string;
       before?: string;
     };
-    /** @description Public key information for Chat encryption */
+    /** @description A user's public key with associated key recovery configuration. */
     PublicKey: {
       /** @description DER-encoded signature proving the signing key is bound to the identity key (base64 encoded). */
       identity_public_key_signature?: string;
+      juicebox_config?: components["schemas"]["ChatJuiceboxConfig"];
       /** @description Identity public key (base64 encoded). */
       public_key?: string;
+      /** @description Public key version. */
+      public_key_version?: string;
       /** @description Signing public key (base64 encoded). */
       signing_public_key?: string;
-      /** @description Juicebox configuration. */
-      token_map?: {
-        /** @description Raw JSON for Juicebox SDK. */
-        key_store_token_map_json?: string;
-        /** @description Maximum guess count for Juicebox. */
-        max_guess_count?: number;
-        /** @description List of Juicebox realms. */
-        realms?: {
-          /** @description Realm URL. */
-          address?: string;
-          /** @description Realm identifier. */
-          realm_id?: string;
-          /** @description JWT auth token for realm. */
-          token?: string;
-        }[];
-      };
-      /** @description Public key version. */
-      version?: string;
     };
     /** @description Confirmation that the replay job request was accepted. */
     ReplayJobCreateResponse: {
@@ -3563,7 +3595,14 @@ export interface components {
       parameter: string;
       resource_id: string;
       /** @enum {string} */
-      resource_type: "user" | "tweet" | "media" | "list" | "space";
+      resource_type:
+        | "user"
+        | "tweet"
+        | "media"
+        | "list"
+        | "space"
+        | "place"
+        | "poll";
       /** @description Value will match the schema of the field. */
       value: string;
     };
@@ -5399,8 +5438,8 @@ export interface components {
       | "identity_public_key_signature"
       | "juicebox_config"
       | "public_key"
+      | "public_key_version"
       | "signing_public_key"
-      | "version"
     )[];
     /** @description A comma separated list of RulesCount fields to display. */
     RulesCountFieldsParameter: (
@@ -5998,7 +6037,7 @@ export interface operations {
   getChatConversationEvents: {
     parameters: {
       path: {
-        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        /** The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g'). */
         id: components["schemas"]["ChatConversationOrRecipientId"];
       };
       query: {
@@ -6027,8 +6066,9 @@ export interface operations {
     };
   };
   /**
-   * Initializes encryption keys for a Chat conversation. This is the first step
-   * before sending messages in a new 1:1 conversation.
+   * Adds (initializes or rotates) the encryption keys for a Chat conversation.
+   * Call this before sending messages in a new 1:1 conversation, and again with a
+   * newer key version to rotate the conversation key.
    *
    * For 1:1 conversations, provide the recipient's user ID as the conversation_id.
    * The server constructs the canonical conversation ID from the authenticated user
@@ -6037,20 +6077,23 @@ export interface operations {
    * The request body must contain the conversation key version and participant keys
    * (the conversation key encrypted for each participant using their public key).
    *
-   * **Workflow (1:1 conversation):**
+   * **Workflow (new 1:1 conversation):**
    * 1. Generate a conversation key using the SDK
    * 2. Encrypt the key for both participants using their public keys
    * 3. Call this endpoint to register the keys
    * 4. Send messages using `POST /chat/conversations/{id}/messages`
    *
+   * To rotate the keys of an existing conversation, repeat the same call with a
+   * newer conversation key version.
+   *
    * **Authentication:**
    * - Requires OAuth 1.0a User Context or OAuth 2.0 User Context
    * - Required scopes: `tweet.read`, `users.read`, `dm.write`
    */
-  initializeChatConversationKeys: {
+  addConversationKeys: {
     parameters: {
       path: {
-        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        /** The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g'). */
         id: components["schemas"]["ChatConversationOrRecipientId"];
       };
     };
@@ -6079,7 +6122,7 @@ export interface operations {
   addChatGroupMembers: {
     parameters: {
       path: {
-        /** The Chat group conversation ID. */
+        /** The Chat group conversation ID (prefixed with 'g'). */
         id: components["schemas"]["ChatConversationOrRecipientId"];
       };
     };
@@ -6108,7 +6151,7 @@ export interface operations {
   sendChatMessage: {
     parameters: {
       path: {
-        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        /** The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g'). */
         id: components["schemas"]["ChatConversationOrRecipientId"];
       };
     };
@@ -6137,7 +6180,7 @@ export interface operations {
   markChatConversationRead: {
     parameters: {
       path: {
-        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        /** The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g'). */
         id: components["schemas"]["ChatConversationOrRecipientId"];
       };
     };
@@ -6166,7 +6209,7 @@ export interface operations {
   sendChatTypingIndicator: {
     parameters: {
       path: {
-        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        /** The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g'). */
         id: components["schemas"]["ChatConversationOrRecipientId"];
       };
     };
@@ -6273,7 +6316,7 @@ export interface operations {
   chatMediaDownload: {
     parameters: {
       path: {
-        /** The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g'). */
+        /** The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g'). */
         id: components["schemas"]["ChatConversationOrRecipientId"];
         /** The media hash key returned from the upload initialize step. */
         media_hash_key: components["schemas"]["MediaHashKey"];
@@ -10762,7 +10805,7 @@ export type createChatConversation = operations['createChatConversation']
 export type initializeChatGroup = operations['initializeChatGroup']
 export type getChatConversation = operations['getChatConversation']
 export type getChatConversationEvents = operations['getChatConversationEvents']
-export type initializeChatConversationKeys = operations['initializeChatConversationKeys']
+export type addConversationKeys = operations['addConversationKeys']
 export type addChatGroupMembers = operations['addChatGroupMembers']
 export type sendChatMessage = operations['sendChatMessage']
 export type markChatConversationRead = operations['markChatConversationRead']

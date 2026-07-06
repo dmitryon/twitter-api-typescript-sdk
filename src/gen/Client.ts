@@ -36,7 +36,7 @@ import {
   initializeChatGroup,
   getChatConversation,
   getChatConversationEvents,
-  initializeChatConversationKeys,
+  addConversationKeys,
   addChatGroupMembers,
   sendChatMessage,
   markChatConversationRead,
@@ -3108,7 +3108,7 @@ configure the group with members, admins, encryption keys, and other settings.
     *
 
     * Retrieves messages and key change events for a specific Chat conversation with pagination support. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient.
-    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param id - The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g').
     * @param params - The params for getChatConversationEvents
     * @param request_options - Customize the options for this request
     */
@@ -3127,11 +3127,12 @@ configure the group with members, admins, encryption keys, and other settings.
       }),
 
     /**
-    * Initialize Conversation Keys
+    * Add Conversation Keys
     *
 
-    * Initializes encryption keys for a Chat conversation. This is the first step
-before sending messages in a new 1:1 conversation.
+    * Adds (initializes or rotates) the encryption keys for a Chat conversation.
+Call this before sending messages in a new 1:1 conversation, and again with a
+newer key version to rotate the conversation key.
 
 For 1:1 conversations, provide the recipient's user ID as the conversation_id.
 The server constructs the canonical conversation ID from the authenticated user
@@ -3140,26 +3141,29 @@ and recipient.
 The request body must contain the conversation key version and participant keys
 (the conversation key encrypted for each participant using their public key).
 
-**Workflow (1:1 conversation):**
+**Workflow (new 1:1 conversation):**
 1. Generate a conversation key using the SDK
 2. Encrypt the key for both participants using their public keys
 3. Call this endpoint to register the keys
 4. Send messages using `POST /chat/conversations/{id}/messages`
 
+To rotate the keys of an existing conversation, repeat the same call with a
+newer conversation key version.
+
 **Authentication:**
 - Requires OAuth 1.0a User Context or OAuth 2.0 User Context
 - Required scopes: `tweet.read`, `users.read`, `dm.write`
 
-    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
-    * @param request_body - The request_body for initializeChatConversationKeys
+    * @param id - The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g').
+    * @param request_body - The request_body for addConversationKeys
     * @param request_options - Customize the options for this request
     */
-    initializeChatConversationKeys: (
+    addConversationKeys: (
       id: string,
-      request_body: TwitterBody<initializeChatConversationKeys>,
+      request_body: TwitterBody<addConversationKeys>,
       request_options?: Partial<RequestOptions>
-    ): Promise<TwitterResponse<initializeChatConversationKeys>> =>
-      rest<TwitterResponse<initializeChatConversationKeys>>({
+    ): Promise<TwitterResponse<addConversationKeys>> =>
+      rest<TwitterResponse<addConversationKeys>>({
         auth: this.#auth,
         ...this.#defaultRequestOptions,
         ...request_options,
@@ -3173,7 +3177,7 @@ The request body must contain the conversation key version and participant keys
     *
 
     * Adds one or more members to an existing encrypted Chat group conversation, rotating the conversation key.
-    * @param id - The Chat group conversation ID.
+    * @param id - The Chat group conversation ID (prefixed with 'g').
     * @param request_body - The request_body for addChatGroupMembers
     * @param request_options - Customize the options for this request
     */
@@ -3196,7 +3200,7 @@ The request body must contain the conversation key version and participant keys
     *
 
     * Sends an encrypted message to a specific Chat conversation. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient.
-    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param id - The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g').
     * @param request_body - The request_body for sendChatMessage
     * @param request_options - Customize the options for this request
     */
@@ -3219,7 +3223,7 @@ The request body must contain the conversation key version and participant keys
     *
 
     * Marks a specific Chat conversation as read on behalf of the authenticated user. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient.
-    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param id - The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g').
     * @param request_body - The request_body for markChatConversationRead
     * @param request_options - Customize the options for this request
     */
@@ -3242,7 +3246,7 @@ The request body must contain the conversation key version and participant keys
     *
 
     * Sends a typing indicator to a specific Chat conversation on behalf of the authenticated user. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient.
-    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param id - The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g').
     * @param request_options - Customize the options for this request
     */
     sendChatTypingIndicator: (
@@ -3329,7 +3333,7 @@ The request body must contain the conversation key version and participant keys
     *
 
     * Downloads encrypted media bytes from an XChat conversation. The response body contains raw binary bytes. For 1:1 conversations, provide the recipient's user ID; the server constructs the canonical conversation ID from the authenticated user and recipient.
-    * @param id - The recipient's user ID for a 1:1 conversation, or a group conversation ID (prefixed with 'g').
+    * @param id - The recipient's user ID for a 1:1 conversation, the hyphen-separated 1:1 conversation ID (e.g. '123-456'), or a group conversation ID (prefixed with 'g').
     * @param media_hash_key - The media hash key returned from the upload initialize step.
     * @param request_options - Customize the options for this request
     */
