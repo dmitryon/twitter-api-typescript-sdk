@@ -323,8 +323,11 @@ window.XChatUI = (() => {
     }
   }
 
-  function renderMessages(errorMsg) {
+  function renderMessages(errorMsg, { scrollToBottom = true } = {}) {
     const content = document.getElementById('xchatContent');
+    // Save scroll position if preserving
+    const oldList = document.querySelector('.xchat-messages-list');
+    const savedScroll = !scrollToBottom && oldList ? oldList.scrollTop : null;
     const backBtn = `<button class="btn btn-secondary btn-sm" onclick="XChatUI.showTab('conversations')">← Back</button>`;
     const sourceLabel = state.messagesSource === 'api' ? '🔐 Messages fetched from X Chat API and decrypted locally' : '📨 Messages loaded from webhook events';
     const sourceNote = `<div class="xchat-enc-note">${sourceLabel}</div>`;
@@ -438,6 +441,12 @@ window.XChatUI = (() => {
         <button class="btn btn-primary" onclick="XChatUI.sendMessage()">Send</button>
       </div>
     `;
+    // Scroll handling
+    const list = document.querySelector('.xchat-messages-list');
+    if (list) {
+      if (savedScroll !== null) list.scrollTop = savedScroll;
+      else list.scrollTop = list.scrollHeight;
+    }
   }
 
   // --- Send ---
@@ -1043,7 +1052,7 @@ window.XChatUI = (() => {
       state.nextToken = data.meta?.next_token || null;
       const senderIds = [...new Set(older.map(m => m.sender_id).filter(Boolean))];
       await lookupUsers(senderIds);
-      renderMessages();
+      renderMessages(undefined, { scrollToBottom: false });
     } catch {}
   }
 
@@ -1107,7 +1116,7 @@ window.XChatUI = (() => {
         } else {
           msg.reactions.push({ emoji, sender_id: state.userId });
         }
-        renderMessages();
+        renderMessages(undefined, { scrollToBottom: false });
       }
     } catch (e) {
       alert(`Reaction failed: ${e.message}`);
@@ -1146,7 +1155,7 @@ window.XChatUI = (() => {
         msg.text = text;
         msg.edited = true;
       }
-      renderMessages();
+      renderMessages(undefined, { scrollToBottom: false });
     } catch (e) {
       alert(`Edit failed: ${e.message}`);
     }

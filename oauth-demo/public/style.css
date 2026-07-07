@@ -698,12 +698,12 @@ h1 {
 .chat-mode-choice .btn { padding: 15px 30px; font-size: 16px; }
 .hint { color: #657786; font-size: 13px; text-align: center; }
 
-.xchat-dialog { max-width: 800px; width: 90%; max-height: none; display: flex; flex-direction: column; margin: 2vh auto; overflow: visible; }
+.xchat-dialog { max-width: 800px; width: 90%; max-height: none; height: calc(100vh - 4vh); display: flex; flex-direction: column; margin: 2vh auto; overflow: visible; }
 .xchat-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; }
 .xchat-tabs { display: flex; gap: 5px; border-bottom: 1px solid #e1e8ed; padding-bottom: 10px; }
 .xchat-tab { background: none; border: 1px solid #e1e8ed; border-radius: 20px; padding: 6px 16px; cursor: pointer; }
 .xchat-tab.active { background: #7c3aed; color: white; border-color: #7c3aed; }
-.xchat-content { flex: 1; padding: 10px 0; }
+.xchat-content { flex: 1; padding: 10px 0; overflow: hidden; display: flex; flex-direction: column; }
 
 .xchat-conversation-item { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer; }
 .xchat-conversation-item:hover { background: #f5f5f5; }
@@ -711,14 +711,14 @@ h1 {
 .xchat-conv-name { font-weight: 600; }
 .xchat-conv-meta { font-size: 12px; color: #657786; }
 
-.xchat-enc-note { background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; padding: 8px 12px; font-size: 12px; margin: 8px 0; }
+.xchat-enc-note { background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; padding: 8px 12px; font-size: 12px; margin: 8px 0; flex-shrink: 0; }
 .xchat-error-msg { background: #fee2e2; border: 1px solid #f87171; border-radius: 6px; padding: 8px 12px; font-size: 13px; margin: 8px 0; color: #b91c1c; }
 .xchat-event-types { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px; margin-bottom: 8px; font-size: 12px; }
 .xchat-event-types label { display: block; cursor: pointer; padding: 2px 0; }
 .xchat-key-actions { margin-top: 8px; display: flex; gap: 8px; }
 .xchat-sub-actions { display: flex; gap: 4px; }
 .xchat-msg-self { background: #e8f4fd; border-radius: 8px; padding: 4px 8px; }
-.xchat-messages-list { max-height: 400px; overflow-y: auto; }
+.xchat-messages-list { flex: 1; overflow-y: auto; min-height: 0; }
 .xchat-attachment { margin: 4px 0; }
 .xchat-attachment img { display: block; margin: 4px 0; }
 .xchat-media-inline { max-width: 300px; max-height: 250px; border-radius: 8px; display: block; margin: 4px 0; }
@@ -733,7 +733,7 @@ div.xchat-media-broken { border: 1px dashed #666; padding: 12px; border-radius: 
 .xchat-conv-avatar { width: 36px; height: 36px; border-radius: 50%; }
 .xchat-username { color: #888; font-weight: normal; font-size: 0.85em; }
 .xchat-msg-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.xchat-load-more { display: block; margin: 8px auto; opacity: 0.7; }
+.xchat-load-more { display: block; margin: 8px auto; opacity: 0.7; flex-shrink: 0; }
 .xchat-msg-event { font-size: 0.85em; color: #999; padding: 4px 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .xchat-group-event { justify-content: center; color: #777; font-style: italic; }
 .xchat-reactions { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
@@ -753,7 +753,7 @@ div.xchat-media-broken { border: 1px dashed #666; padding: 12px; border-radius: 
 .xchat-emoji-btn:hover { background: #444; }
 .xchat-edit-form { display: flex; gap: 6px; align-items: center; }
 .xchat-edit-form input { flex: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid #555; background: #1a1a1a; color: #eee; }
-.xchat-reply-preview-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #1a1a1a; border-left: 3px solid #555; border-radius: 4px; margin: 0 10px; font-size: 0.85em; color: #aaa; }
+.xchat-reply-preview-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #1a1a1a; border-left: 3px solid #555; border-radius: 4px; margin: 0 10px; font-size: 0.85em; color: #aaa; flex-shrink: 0; }
 .xchat-reply-indicator { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .xchat-reply-preview { border-left: 3px solid #555; padding: 4px 8px; margin-bottom: 4px; font-size: 0.85em; color: #aaa; background: #1a1a1a; border-radius: 4px; }
 .xchat-reply-sender { font-weight: bold; color: #ccc; }
@@ -763,14 +763,14 @@ div.xchat-media-broken { border: 1px dashed #666; padding: 12px; border-radius: 
 .xchat-entity-hashtag { color: #1d9bf0; font-weight: 500; }
 .xchat-entity-mention { color: #1d9bf0; font-weight: 500; }
 .xchat-entity-cashtag { color: #00ba7c; font-weight: 500; }
-.xchat-messages-list { max-height: 300px; overflow-y: auto; }
+
 .xchat-message { padding: 8px; border-bottom: 1px solid #f0f0f0; }
 .xchat-msg-meta { display: flex; gap: 10px; font-size: 11px; color: #657786; }
 .xchat-msg-body { margin-top: 4px; }
 .xchat-encrypted-payload { font-family: monospace; font-size: 11px; color: #7c3aed; background: #f5f3ff; padding: 4px 8px; border-radius: 4px; margin-top: 4px; word-break: break-all; }
 .xchat-media-badge { font-size: 12px; color: #657786; }
 
-.xchat-send-form { display: flex; gap: 8px; align-items: center; padding-top: 10px; border-top: 1px solid #e1e8ed; margin-top: 10px; }
+.xchat-send-form { display: flex; gap: 8px; align-items: center; padding-top: 10px; border-top: 1px solid #e1e8ed; margin-top: 10px; flex-shrink: 0; }
 .xchat-send-form input[type="text"] { flex: 1; padding: 8px 12px; border: 1px solid #e1e8ed; border-radius: 20px; }
 
 .xchat-xaa-section { margin-bottom: 20px; }
