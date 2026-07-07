@@ -290,6 +290,8 @@ window.XChatUI = (() => {
         };
         // Avoid duplicates
         if (state.messages.find(m => m.id === msg.id)) return;
+        // Skip our own messages (already added optimistically on send)
+        if (msg.sender_id === state.userId) return;
         // Lookup sender if needed
         if (msg.sender_id && !userCache[msg.sender_id]) await lookupUsers([msg.sender_id]);
         state.messages.push(msg);
@@ -515,7 +517,20 @@ window.XChatUI = (() => {
       typingStartedAt = null;
       cancelReply();
       clearFile();
-      openConversation(state.currentConversation);
+      showUploadStatus('');
+      document.getElementById('xchatPendingMedia').style.display = 'none';
+      // Add sent message optimistically
+      state.messages.push({
+        id: data.data?.id || `local-${Date.now()}`,
+        sender_id: state.userId,
+        conversation_id: state.currentConversation,
+        created_at: new Date().toISOString(),
+        text: text || null,
+        attachments: media_hash_key ? [{ media_hash_key, type: 'file' }] : null,
+        encrypted: false,
+        source: 'local',
+      });
+      renderMessages();
     } catch (e) {
       showUploadStatus(`❌ ${e.message}`);
     }
