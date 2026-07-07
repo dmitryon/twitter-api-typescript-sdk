@@ -22,10 +22,11 @@ import { extractContentsFromMessageEvent, decodeMessageEntryHolder } from "../xc
 import { decode } from "../xchat/thrift-codec";
 import { MessageEventSchema } from "../xchat/thrift-models";
 import { recover, register as juiceboxRegister } from "../xchat/juicebox/client";
-import { secretstreamDecryptAsync, secretstreamEncryptAsync } from "../xchat/secretstream";
+import { secretstreamEncryptAsync, createSecretstreamDecryptTransform } from "../xchat/secretstream";
 import crypto from "crypto";
 import fs from "fs/promises";
-import { createReadStream } from "fs";
+import { createReadStream, createWriteStream } from "fs";
+import { Readable, PassThrough } from "stream";
 import path from "path";
 import { __dirname } from "../esm-utils";
 
@@ -748,57 +749,85 @@ export const proxyXChatMedia = async (req: Request, res: Response) => {
       return;
     }
 
-    const encryptedBuffer = Buffer.from(await response.arrayBuffer());
-
-    // XChat media is encrypted with the conversation key using secretbox
+    // Resolve conversation key for decryption
     const canonicalId = toCanonicalConvId(conversation_id as string);
     const userId = await resolveUserId(integrationId);
     const userKeys = userId ? await ensureKeys(userId, resolved.client).catch(() => null) : null;
-
-    let decryptedBuffer: Buffer;
+    let convKey: Buffer | null = null;
     if (userKeys) {
       const convKeyEntry = await conversationKeyStorage.load(canonicalId);
       if (convKeyEntry?.encrypted_conversation_key) {
         const result = tryUnwrapConversationKey(convKeyEntry.encrypted_conversation_key, userKeys);
-        if (result) {
-          try {
-            decryptedBuffer = await secretstreamDecryptAsync(encryptedBuffer, result.key);
-          } catch (decErr: any) {
-            log.warn('xchat', `Media decryption failed for ${media_hash_key}: ${decErr.message}`);
-            decryptedBuffer = encryptedBuffer;
-          }
-        } else {
-          log.warn('xchat', `Cannot unwrap conversation key for ${canonicalId}, serving raw media`);
-          decryptedBuffer = encryptedBuffer;
+        convKey = result?.key ?? null;
+      }
+    }
+
+    // Determine content type from response header (will refine after first bytes)
+    const apiContentType = response.headers.get('content-type') || 'application/octet-stream';
+
+    if (convKey && response.body) {
+      // Streaming decrypt: pipe API response → decrypt transform → disk cache + client
+      const decryptTransform = await createSecretstreamDecryptTransform(convKey);
+      const cachePath = await mediaCache.getWritePath(cacheKey, apiContentType);
+      const cacheStream = createWriteStream(cachePath);
+      const clientStream = new PassThrough();
+
+      // We need to detect content type from the first decrypted bytes
+      let contentTypeDetected = false;
+      let detectedContentType = apiContentType;
+      decryptTransform.on('data', (chunk: Buffer) => {
+        if (!contentTypeDetected) {
+          const detected = detectContentType(chunk);
+          if (detected) detectedContentType = detected;
+          contentTypeDetected = true;
+          // Now we can send headers
+          res.set('Content-Type', detectedContentType);
+          res.set('Transfer-Encoding', 'chunked');
         }
-      } else {
-        log.warn('xchat', `No conversation key for ${canonicalId}, serving raw media`);
-        decryptedBuffer = encryptedBuffer;
+        cacheStream.write(chunk);
+        clientStream.write(chunk);
+      });
+
+      decryptTransform.on('end', async () => {
+        cacheStream.end();
+        clientStream.end();
+        // Save metadata for future Range requests
+        await mediaCache.setMeta(cacheKey, detectedContentType);
+      });
+
+      decryptTransform.on('error', (err) => {
+        log.warn('xchat', `Streaming decrypt error for ${media_hash_key}: ${err.message}`);
+        cacheStream.destroy();
+        if (!res.headersSent) res.status(500).json({ error: 'Decryption failed' });
+        else clientStream.destroy();
+      });
+
+      // Pipe client stream to response
+      clientStream.pipe(res);
+
+      // Feed the API response into the decrypt transform
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { decryptTransform.end(); break; }
+          decryptTransform.write(Buffer.from(value));
+        }
+      } catch (err: any) {
+        decryptTransform.destroy(err);
       }
     } else {
-      log.warn('xchat', `No decrypt key available, serving raw media`);
-      decryptedBuffer = encryptedBuffer;
+      // No key available — pass through raw (unencrypted or can't decrypt)
+      log.warn('xchat', `No conversation key for ${media_hash_key}, streaming raw`);
+      res.set('Content-Type', apiContentType);
+      if (response.body) {
+        const nodeStream = Readable.fromWeb(response.body as any);
+        nodeStream.pipe(res);
+      } else {
+        const buf = Buffer.from(await response.arrayBuffer());
+        res.send(buf);
+      }
     }
-
-    // Detect content type from decrypted bytes
-    let contentType = response.headers.get('content-type') || 'application/octet-stream';
-    if (decryptedBuffer !== encryptedBuffer) {
-      const detected = detectContentType(decryptedBuffer);
-      if (detected) contentType = detected;
-    }
-
-    await mediaCache.set(cacheKey, decryptedBuffer, contentType);
-
-    // Serve with Range support
-    const meta = await mediaCache.getMeta(cacheKey);
-    if (meta) {
-      return serveFileWithRanges(req, res, meta.filePath, meta.contentType, meta.size);
-    }
-    // Fallback: send buffer directly
-    res.set('Content-Type', contentType);
-    res.set('Content-Length', String(decryptedBuffer.length));
-    res.set('Accept-Ranges', 'bytes');
-    res.send(decryptedBuffer);
   } catch (error: any) {
     log.error('xchat', `Media proxy failed:`, error.message || error);
     res.status(error.status || 500).json({ error: error.message || "Unknown error" });

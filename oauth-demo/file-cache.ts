@@ -92,4 +92,20 @@ export class FileCache {
       log.error('cache', 'Failed to cache file:', (error as Error).message);
     }
   }
+
+  /** Get the file path where a cache entry would be written (for streaming writes). */
+  async getWritePath(key: string, contentType: string): Promise<string> {
+    await this.ensureDir();
+    return this.getCacheFilePath(this.getHash(key), contentType);
+  }
+
+  /** Write only the metadata (call after streaming the file to getWritePath). */
+  async setMeta(key: string, contentType: string): Promise<void> {
+    await this.ensureDir();
+    await fs.writeFile(this.getCacheMetaPath(key), JSON.stringify({
+      contentType,
+      timestamp: Date.now(),
+      filename: 'stream'
+    }));
+  }
 }

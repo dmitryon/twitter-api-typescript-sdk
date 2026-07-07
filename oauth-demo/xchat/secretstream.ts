@@ -9,6 +9,7 @@
  */
 
 import _sodium from 'libsodium-wrappers';
+import { Readable, Transform } from 'stream';
 
 const STREAM_HEADER_BYTES = 24;
 const STREAM_A_BYTES = 17;
@@ -61,6 +62,66 @@ export function secretstreamDecrypt(ciphertext: Buffer, key: Buffer): Buffer {
 export async function secretstreamDecryptAsync(ciphertext: Buffer, key: Buffer): Promise<Buffer> {
   await ensureReady();
   return secretstreamDecrypt(ciphertext, key);
+}
+
+/**
+ * Create a Transform stream that decrypts secretstream data on the fly.
+ * Feed encrypted bytes in, get decrypted bytes out.
+ * The first 24 bytes are consumed as the header; subsequent data is
+ * processed in ENCRYPTED_CHUNK_SIZE (1041-byte) frames.
+ */
+export async function createSecretstreamDecryptTransform(key: Buffer): Promise<Transform> {
+  await ensureReady();
+  if (key.length !== 32) throw new Error(`secretstream key must be 32 bytes, got ${key.length}`);
+
+  const sodium = _sodium;
+  let state: any = null;
+  let buf = Buffer.alloc(0);
+  let headerConsumed = false;
+
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      buf = Buffer.concat([buf, chunk]);
+      try {
+        // Consume header
+        if (!headerConsumed) {
+          if (buf.length < STREAM_HEADER_BYTES) { callback(); return; }
+          const header = new Uint8Array(buf.buffer, buf.byteOffset, STREAM_HEADER_BYTES);
+          state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(
+            header, new Uint8Array(key.buffer, key.byteOffset, key.length)
+          );
+          buf = buf.subarray(STREAM_HEADER_BYTES);
+          headerConsumed = true;
+        }
+        // Process complete encrypted chunks
+        while (buf.length >= ENCRYPTED_CHUNK_SIZE) {
+          const frame = new Uint8Array(buf.buffer, buf.byteOffset, ENCRYPTED_CHUNK_SIZE);
+          const result = sodium.crypto_secretstream_xchacha20poly1305_pull(state, frame);
+          if (!result) { callback(new Error('secretstream decrypt failed')); return; }
+          this.push(Buffer.from(result.message));
+          buf = buf.subarray(ENCRYPTED_CHUNK_SIZE);
+          if (result.tag === sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL) {
+            buf = Buffer.alloc(0);
+            break;
+          }
+        }
+        callback();
+      } catch (err) {
+        callback(err as Error);
+      }
+    },
+    flush(callback) {
+      // Process any remaining partial final chunk
+      if (buf.length > 0 && state) {
+        try {
+          const frame = new Uint8Array(buf.buffer, buf.byteOffset, buf.length);
+          const result = _sodium.crypto_secretstream_xchacha20poly1305_pull(state, frame);
+          if (result) this.push(Buffer.from(result.message));
+        } catch {}
+      }
+      callback();
+    },
+  });
 }
 
 /**
