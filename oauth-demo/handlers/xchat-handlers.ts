@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { resolveAuth, mediaCache, sseResponse, integrationStorage, accessTokenStorage } from "./handler-utils";
 import { rest } from "twitter-api-sdk";
-import { UserPublicKeyStorage, ConversationKeyStorage, UserXChatStorage, JuiceboxCallLogger, KeyRecoveryHistoryStorage } from "../storage";
+import { UserPublicKeyStorage, ConversationKeyStorage, UserXChatStorage, JuiceboxCallLogger, KeyRecoveryHistoryStorage, KeyPair } from "../storage";
 import { log } from "../logger";
 import { toCanonicalConvId, toApiConvId, extractRecipientId } from "../xchat/xchat-utils";
 import {
@@ -15,7 +15,8 @@ import {
   spkiToRawPublicKey,
   ecdsaSign,
   ecdsaSignRaw,
-  getPublicKeySPKI
+  getPublicKeySPKI,
+  verifyMessageSignature
 } from "../xchat/chat-crypto";
 import { extractContentsFromMessageEvent, decodeMessageEntryHolder } from "../xchat/chat-thrift";
 import { decode } from "../xchat/thrift-codec";
@@ -44,6 +45,70 @@ function buildJuiceboxConfigJson(jbConfig: any): string {
   }
   return JSON.stringify({ sdk_config: jbConfig.key_store_token_map_json, tokens, max_guess_count: jbConfig.max_guess_count });
 }
+
+/** Result of ensureKeys — all recovered key versions + the latest for signing. */
+interface UserKeys {
+  /** All private keys indexed by version */
+  allKeys: Record<string, KeyPair>;
+  /** The latest key version (used for signing outgoing messages) */
+  latestVersion: string;
+  /** The latest key pair (convenience) */
+  latest: KeyPair;
+}
+
+/** Try to unwrap a conversation key using the specified user key version, falling back to all keys. */
+function tryUnwrapConversationKey(encryptedConvKey: string, userKeys: UserKeys, publicKeyVersion?: string): { key: Buffer; decryptKeyB64: string; version: string } | null {
+  // If a specific version is hinted, try it first
+  if (publicKeyVersion && userKeys.allKeys[publicKeyVersion]) {
+    try {
+      const kp = userKeys.allKeys[publicKeyVersion];
+      return { key: unwrapConversationKey(encryptedConvKey, kp.decryptKeyB64), decryptKeyB64: kp.decryptKeyB64, version: publicKeyVersion };
+    } catch {}
+  }
+  // Brute-force all keys
+  for (const [ver, kp] of Object.entries(userKeys.allKeys)) {
+    if (ver === publicKeyVersion) continue; // already tried
+    try {
+      return { key: unwrapConversationKey(encryptedConvKey, kp.decryptKeyB64), decryptKeyB64: kp.decryptKeyB64, version: ver };
+    } catch {}
+  }
+  return null;
+}
+
+/** Resolve the latest conversation key from the API's conversation_key_events. */
+async function resolveLatestConversationKey(
+  client: any, apiConvId: string, canonicalId: string, userId: string, userKeys: UserKeys
+): Promise<{ encryptedConvKey: string; keyVersion: string } | null> {
+  try {
+    const eventsResp = await client.chat.getChatConversationEvents(apiConvId, { max_results: 1 }) as any;
+    const keyEvents = eventsResp.meta?.conversation_key_events || [];
+    // Iterate all key events and pick the one with the highest version
+    let best: { encryptedConvKey: string; keyVersion: string } | null = null;
+    for (const keyEventB64 of keyEvents) {
+      try {
+        const keyBuf = Buffer.from(keyEventB64, 'base64');
+        const keyEvent = decode(keyBuf, MessageEventSchema);
+        const kce = keyEvent.detail?.conversationKeyChangeEvent;
+        if (!kce) continue;
+        const ours = (kce.conversation_participant_keys || []).find((pk: any) => pk.user_id === userId);
+        if (!ours?.encrypted_conversation_key) continue;
+        // Verify we can actually unwrap it (use public_key_version hint from participant entry)
+        if (!tryUnwrapConversationKey(ours.encrypted_conversation_key, userKeys, ours.public_key_version)) continue;
+        const ver = kce.conversation_key_version || '';
+        if (!best || Number(ver) > Number(best.keyVersion)) {
+          best = { encryptedConvKey: ours.encrypted_conversation_key, keyVersion: ver };
+        }
+      } catch {}
+    }
+    if (best) {
+      await conversationKeyStorage.save({ id: canonicalId, encrypted_conversation_key: best.encryptedConvKey, key_version: best.keyVersion, cached_at: new Date().toISOString() });
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
 /** Resolve the OAuth2 user ID for an integration. */
 async function resolveUserId(integrationId: string): Promise<string | null> {
   const integration = await integrationStorage.load(integrationId);
@@ -92,18 +157,15 @@ export const getXChatMessages = async (req: Request, res: Response) => {
 
     // Resolve user ID and keys for decryption
     const userId = await resolveUserId(integrationId);
-    const keysResult = userId ? await ensureKeys(userId, resolved.client).catch(() => null) : null;
-    const keys = keysResult?.private_key ? JSON.parse(keysResult.private_key) : null;
+    const userKeys = userId ? await ensureKeys(userId, resolved.client).catch(() => null) : null;
 
     // Get conversation key
     let convKey: Buffer | null = null;
-    if (keys?.decryptKeyB64) {
+    if (userKeys) {
       const cached = await conversationKeyStorage.load(canonicalId);
       if (cached?.encrypted_conversation_key) {
-        try {
-          
-          convKey = unwrapConversationKey(cached.encrypted_conversation_key, keys.decryptKeyB64);
-        } catch {}
+        const result = tryUnwrapConversationKey(cached.encrypted_conversation_key, userKeys);
+        convKey = result?.key ?? null;
       }
     }
 
@@ -118,7 +180,7 @@ export const getXChatMessages = async (req: Request, res: Response) => {
       // Extract conversation key(s) from response metadata, indexed by version
       const convKeysByVersion = new Map<string, Buffer>();
       if (convKey) convKeysByVersion.set('', convKey); // cached key (version unknown)
-      if (keys?.decryptKeyB64 && (eventsResp as any).meta?.conversation_key_events?.length) {
+      if (userKeys && (eventsResp as any).meta?.conversation_key_events?.length) {
         
         for (const keyEventB64 of (eventsResp as any).meta.conversation_key_events) {
           try {
@@ -131,10 +193,11 @@ export const getXChatMessages = async (req: Request, res: Response) => {
             const ours = participantKeys.find((pk: any) => pk.user_id === userId);
             if (!ours?.encrypted_conversation_key) continue;
             try {
-              const extracted = unwrapConversationKey(ours.encrypted_conversation_key, keys.decryptKeyB64);
-              convKeysByVersion.set(keyVersion, extracted);
+              const result = tryUnwrapConversationKey(ours.encrypted_conversation_key, userKeys, ours.public_key_version);
+              if (!result) continue;
+              convKeysByVersion.set(keyVersion, result.key);
               if (!convKey) {
-                convKey = extracted;
+                convKey = result.key;
                 await conversationKeyStorage.save({ id: canonicalId, encrypted_conversation_key: ours.encrypted_conversation_key, key_version: keyVersion, cached_at: new Date().toISOString() });
               }
             } catch {}
@@ -192,6 +255,13 @@ export const getXChatMessages = async (req: Request, res: Response) => {
 
             const contents = extractContentsFromMessageEvent(eventBuf);
             if (contents) {
+              // Verify message signature
+              const sigValid = verifyMessageSignature(fullEvent);
+              if (sigValid === false) {
+                log.warn('xchat', `getXChatMessages: ⚠️ INVALID signature on event ${event.id} from ${event.sender_id}`);
+              }
+              msg.signature_valid = sigValid;
+
               // Look up key by version from MessageCreateEvent, fallback to trying all
               const mceVersion = fullEvent.detail?.messageCreateEvent?.conversation_key_version || '';
               const keysToTry = convKeysByVersion.has(mceVersion)
@@ -352,8 +422,8 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
       return;
     }
 
-    const keysResult = await ensureKeys(userId, resolved.client);
-    if (!keysResult) {
+    const userKeys = await ensureKeys(userId, resolved.client);
+    if (!userKeys) {
       res.status(400).json({ error: "Keys not available. Set PIN and try again." });
       return;
     }
@@ -393,16 +463,33 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
               if (!kce) continue;
               const ours = (kce.conversation_participant_keys || []).find((pk: any) => pk.user_id === userId);
               if (!ours?.encrypted_conversation_key) continue;
-              encryptedConvKey = ours.encrypted_conversation_key;
-              key_version = kce.conversation_key_version || key_version;
-              await conversationKeyStorage.save({ id: convKeyId, encrypted_conversation_key: encryptedConvKey, key_version: key_version || '', cached_at: new Date().toISOString() });
-              break;
+              if (!tryUnwrapConversationKey(ours.encrypted_conversation_key, userKeys, ours.public_key_version)) continue;
+              const ver = kce.conversation_key_version || '';
+              // Always pick the latest (highest) key version
+              if (!key_version || Number(ver) > Number(key_version)) {
+                encryptedConvKey = ours.encrypted_conversation_key;
+                key_version = ver;
+              }
             } catch {}
+          }
+          if (encryptedConvKey && key_version) {
+            await conversationKeyStorage.save({ id: convKeyId, encrypted_conversation_key: encryptedConvKey, key_version: key_version || '', cached_at: new Date().toISOString() });
           }
         }
       } catch (eventsErr: any) {
         // New conversation — no events exist yet, proceed to key initialization
         log.debug('xchat', `[send] getChatConversationEvents failed (${eventsErr.status || 'unknown'}), likely new conversation`);
+      }
+    }
+
+    // Verify we can actually unwrap the cached key with our current private key
+    let unwrapResult: { key: Buffer; decryptKeyB64: string; version: string } | null = null;
+    if (encryptedConvKey) {
+      unwrapResult = tryUnwrapConversationKey(encryptedConvKey, userKeys);
+      if (!unwrapResult) {
+        log.warn('xchat', `[send] cached conversation key cannot be unwrapped (likely wrapped for old key version), re-initializing`);
+        encryptedConvKey = undefined;
+        key_version = undefined;
       }
     }
 
@@ -422,7 +509,7 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
       } else {
         // 1:1: extract from conversation ID
         const recipientId = extractRecipientId(convKeyId, userId);
-        participantIds = [userId, recipientId];
+        participantIds = recipientId === userId ? [userId] : [userId, recipientId];
       }
 
       // Generate random conversation key
@@ -432,24 +519,21 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
       // Wrap for each participant using their public key
       const conversationParticipantKeys: { user_id: string; encrypted_conversation_key: string; public_key_version: string }[] = [];
       for (const pid of participantIds) {
-        let pkEntry = await userPublicKeyStorage.load(pid);
-        if (!pkEntry?.public_key) {
-          const pkResp = await resolved.client.users.getUsersPublicKey(pid) as any;
-          const entry = Array.isArray(pkResp?.data) ? pkResp.data[pkResp.data.length - 1] : pkResp?.data;
-          if (!entry?.public_key) {
-            res.status(400).json({ error: `Participant ${pid} has no public key (not enrolled in X Chat)` });
-            return;
-          }
-          pkEntry = { id: pid, public_key: entry.public_key, signing_public_key: entry.signing_public_key, version: entry.version };
-          await userPublicKeyStorage.save({ ...pkEntry, juicebox_config: entry.juicebox_config ?? entry.token_map, cached_at: new Date().toISOString() });
+        // Always fetch fresh public keys to avoid wrapping with a stale/old key version
+        const pkResp = await resolved.client.users.getUsersPublicKey(pid) as any;
+        const entry = Array.isArray(pkResp?.data) ? pkResp.data[pkResp.data.length - 1] : pkResp?.data;
+        if (!entry?.public_key) {
+          res.status(400).json({ error: `Participant ${pid} has no public key (not enrolled in X Chat)` });
+          return;
         }
-        const wrapped = wrapConversationKey(newConvKey, spkiToRawPublicKey(pkEntry.public_key));
-        conversationParticipantKeys.push({ user_id: pid, encrypted_conversation_key: wrapped, public_key_version: pkEntry.version || '' });
+        await userPublicKeyStorage.save({ id: pid, public_key: entry.public_key, signing_public_key: entry.signing_public_key, version: entry.public_key_version, juicebox_config: entry.juicebox_config ?? entry.token_map, cached_at: new Date().toISOString() });
+        const wrapped = wrapConversationKey(newConvKey, spkiToRawPublicKey(entry.public_key));
+        conversationParticipantKeys.push({ user_id: pid, encrypted_conversation_key: wrapped, public_key_version: entry.public_key_version || '' });
       }
 
       // Initialize keys on the API
       const recipientId = extractRecipientId(convKeyId, userId);
-      await resolved.client.chat.initializeChatConversationKeys(
+      await resolved.client.chat.addConversationKeys(
         convKeyId.startsWith('g') ? apiConvId : recipientId,
         {
           conversation_key_version: newKeyVersion,
@@ -466,15 +550,21 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
     }
 
     log.debug('xchat', `[send] encrypting message (key_version=${key_version})`);
+    // Use the decrypt key that can actually unwrap this conversation key,
+    // but always sign with the latest signing key
+    const sendKeys = {
+      signingKeyB64: userKeys.latest.signingKeyB64,
+      decryptKeyB64: unwrapResult?.decryptKeyB64 ?? userKeys.latest.decryptKeyB64,
+    };
     const payload = await encryptMessage(
-      keysResult.private_key,
+      JSON.stringify(sendKeys),
       encryptedConvKey,
       text,
       message_id,
       userId,
       convKeyId,
       key_version ?? '1',
-      keysResult.signing_key_version ?? '1',
+      userKeys.latestVersion,
       reply_to,
     );
 
@@ -544,17 +634,21 @@ export const uploadXChatMedia = async (req: Request, res: Response) => {
     // Encrypt media with conversation key using secretstream
     const canonicalId = toCanonicalConvId(conversation_id);
     const userId = await resolveUserId(integrationId);
-    const keysResult = userId ? await ensureKeys(userId, resolved.client).catch(() => null) : null;
-    const keys = keysResult?.private_key ? JSON.parse(keysResult.private_key) : null;
+    const userKeys = userId ? await ensureKeys(userId, resolved.client).catch(() => null) : null;
 
     let mediaBuffer: Buffer;
-    if (keys?.decryptKeyB64) {
+    if (userKeys) {
       const convKeyEntry = await conversationKeyStorage.load(canonicalId);
       if (convKeyEntry?.encrypted_conversation_key) {
-        const convKey = unwrapConversationKey(convKeyEntry.encrypted_conversation_key, keys.decryptKeyB64);
-        sendEvent({ step: 'encrypting', detail: `${plaintextBuffer.length} bytes` });
-        mediaBuffer = await secretstreamEncryptAsync(plaintextBuffer, convKey);
-        log.debug('xchat', `Media encrypted: ${plaintextBuffer.length} → ${mediaBuffer.length} bytes`);
+        const result = tryUnwrapConversationKey(convKeyEntry.encrypted_conversation_key, userKeys);
+        if (result) {
+          sendEvent({ step: 'encrypting', detail: `${plaintextBuffer.length} bytes` });
+          mediaBuffer = await secretstreamEncryptAsync(plaintextBuffer, result.key);
+          log.debug('xchat', `Media encrypted: ${plaintextBuffer.length} → ${mediaBuffer.length} bytes`);
+        } else {
+          log.warn('xchat', `Cannot unwrap conversation key for ${canonicalId}, uploading unencrypted`);
+          mediaBuffer = plaintextBuffer;
+        }
       } else {
         log.warn('xchat', `No conversation key for ${canonicalId}, uploading unencrypted`);
         mediaBuffer = plaintextBuffer;
@@ -657,18 +751,22 @@ export const proxyXChatMedia = async (req: Request, res: Response) => {
     // XChat media is encrypted with the conversation key using secretbox
     const canonicalId = toCanonicalConvId(conversation_id as string);
     const userId = await resolveUserId(integrationId);
-    const keysResult = userId ? await ensureKeys(userId, resolved.client).catch(() => null) : null;
-    const keys = keysResult?.private_key ? JSON.parse(keysResult.private_key) : null;
+    const userKeys = userId ? await ensureKeys(userId, resolved.client).catch(() => null) : null;
 
     let decryptedBuffer: Buffer;
-    if (keys?.decryptKeyB64) {
+    if (userKeys) {
       const convKeyEntry = await conversationKeyStorage.load(canonicalId);
       if (convKeyEntry?.encrypted_conversation_key) {
-        try {
-          const convKey = unwrapConversationKey(convKeyEntry.encrypted_conversation_key, keys.decryptKeyB64);
-          decryptedBuffer = await secretstreamDecryptAsync(encryptedBuffer, convKey);
-        } catch (decErr: any) {
-          log.warn('xchat', `Media decryption failed for ${media_hash_key}: ${decErr.message}`);
+        const result = tryUnwrapConversationKey(convKeyEntry.encrypted_conversation_key, userKeys);
+        if (result) {
+          try {
+            decryptedBuffer = await secretstreamDecryptAsync(encryptedBuffer, result.key);
+          } catch (decErr: any) {
+            log.warn('xchat', `Media decryption failed for ${media_hash_key}: ${decErr.message}`);
+            decryptedBuffer = encryptedBuffer;
+          }
+        } else {
+          log.warn('xchat', `Cannot unwrap conversation key for ${canonicalId}, serving raw media`);
           decryptedBuffer = encryptedBuffer;
         }
       } else {
@@ -765,70 +863,109 @@ export const getXChatSettings = async (req: Request, res: Response) => {
 
     const xchat = await userXChatStorage.load(userId);
     const hasPin = !!xchat?.pin;
-    const hasPrivateKey = !!xchat?.private_key;
+    const hasPrivateKey = !!(xchat?.private_keys && Object.keys(xchat.private_keys).length > 0) || !!xchat?.private_key;
 
-    // If keys are already cached, no need to check server
-    if (hasPrivateKey) {
-      res.json({ xchat: { has_pin: hasPin, has_private_key: true, needs_registration: false, user_id: userId } });
-      return;
+    // Build per-key status
+    let keyVersions: { version: string; unlocked: boolean; has_pin: boolean }[] = [];
+    if (xchat?.private_keys) {
+      for (const v of Object.keys(xchat.private_keys).sort()) {
+        keyVersions.push({ version: v, unlocked: true, has_pin: !!(xchat.pins?.[v] || xchat.pin) });
+      }
     }
 
-    // Check if user has published keys on the server
-    let needsRegistration = false;
+    // Check server for published versions we haven't recovered yet
+    let serverVersions: string[] = [];
     if (hasPin) {
       try {
         const resolved = await resolveAuth(integrationId, authType as string || 'oauth2');
         if (resolved) {
-          const pkResp = await resolved.client.users.getUsersPublicKey(userId) as any;
-          const keyEntry = Array.isArray(pkResp?.data) ? pkResp.data[0] : pkResp?.data;
-          needsRegistration = !keyEntry?.public_key;
+          const pkResp = await resolved.client.users.getUsersPublicKey(userId, {
+            'public_key.fields': ['public_key_version', 'public_key'] as any,
+          }) as any;
+          const entries = Array.isArray(pkResp?.data) ? pkResp.data : pkResp?.data ? [pkResp.data] : [];
+          for (const e of entries) {
+            const v = String(e.public_key_version ?? '');
+            if (!v) continue;
+            serverVersions.push(v);
+            if (!keyVersions.find(k => k.version === v)) {
+              keyVersions.push({ version: v, unlocked: false, has_pin: !!(xchat?.pins?.[v] || xchat?.pin) });
+            }
+          }
         }
-      } catch {
-        // If we can't check, assume recovery (safer default)
-      }
+      } catch {}
     }
 
+    keyVersions.sort((a, b) => a.version.localeCompare(b.version));
+
+    const needsRegistration = hasPin && !hasPrivateKey && serverVersions.length === 0;
+
     res.json({
-      xchat: { has_pin: hasPin, has_private_key: false, needs_registration: needsRegistration, user_id: userId },
+      xchat: { has_pin: hasPin, has_private_key: hasPrivateKey, needs_registration: needsRegistration, user_id: userId, key_versions: keyVersions },
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || "Unknown error" });
   }
 };
 
-/** Ensure user's private keys are available — from cache or by recovering from Juicebox with PIN. */
-async function ensureKeys(userId: string, client: any, { force = false } = {}): Promise<{ private_key: string; signing_key_version: string } | null> {
+/** Ensure user's private keys are available — from cache or by recovering ALL versions from Juicebox. */
+async function ensureKeys(userId: string, client: any, { force = false } = {}): Promise<UserKeys | null> {
   const xchat = await userXChatStorage.load(userId);
-  if (!force && xchat?.private_key) return { private_key: xchat.private_key, signing_key_version: xchat.signing_key_version || '' };
+
+  // Return cached keys if available (migrate old format)
+  if (!force && xchat?.private_keys && Object.keys(xchat.private_keys).length > 0) {
+    const versions = Object.keys(xchat.private_keys).sort((a, b) => Number(a) - Number(b));
+    const latestVersion = versions[versions.length - 1];
+    return { allKeys: xchat.private_keys, latestVersion, latest: xchat.private_keys[latestVersion] };
+  }
+  if (!force && xchat?.private_key) {
+    // Migrate old single-key format
+    const parsed = JSON.parse(xchat.private_key);
+    const version = parsed.keyVersion || xchat.signing_key_version || 'unknown';
+    const kp: KeyPair = { signingKeyB64: parsed.signingKeyB64, decryptKeyB64: parsed.decryptKeyB64 };
+    return { allKeys: { [version]: kp }, latestVersion: version, latest: kp };
+  }
   if (!xchat?.pin) return null;
 
-  const previousKey = xchat.private_key || undefined;
-  const previousKeyVersion = xchat.signing_key_version || undefined;
-
-  // Fetch fresh juicebox_config
+  // Fetch all key versions with juicebox_config
   const pkData = await client.users.getUsersPublicKey(userId, {
-    'public_key.fields': ['version', 'public_key', 'signing_public_key', 'juicebox_config'] as any,
+    'public_key.fields': ['public_key_version', 'public_key', 'signing_public_key', 'juicebox_config'] as any,
   }) as any;
-  const raw = Array.isArray(pkData?.data) ? pkData.data[pkData.data.length - 1] : pkData?.data;
-  if (!raw?.juicebox_config && !raw?.token_map) return null;
+  const entries = Array.isArray(pkData?.data) ? pkData.data : pkData?.data ? [pkData.data] : [];
+  if (entries.length === 0) return null;
 
-  const jbConfig = raw.juicebox_config ?? raw.token_map;
-  const signingKeyVersion = String(raw.version ?? '');
-  const tokens: Record<string, string> = {};
-  if (jbConfig.token_map && Array.isArray(jbConfig.token_map)) {
-    for (const t of jbConfig.token_map) tokens[t.key] = t.value?.token ?? t.value;
+  const allKeys: Record<string, KeyPair> = { ...(xchat.private_keys || {}) };
+
+  // Recover each version that we don't already have
+  for (const entry of entries) {
+    const version = String(entry.public_key_version ?? '');
+    if (!version || allKeys[version]) continue;
+    const jbConfig = entry.juicebox_config ?? entry.token_map;
+    if (!jbConfig?.key_store_token_map_json) continue;
+
+    // Use per-version PIN if available, otherwise fall back to default PIN
+    const pin = xchat.pins?.[version] || xchat.pin!;
+    try {
+      const configJson = buildJuiceboxConfigJson(jbConfig);
+      const secret = await recover(pin, configJson, userId, juiceboxLogger);
+      const decryptKeyB64 = Buffer.from(secret.slice(0, 32)).toString('base64');
+      const signingKeyB64 = secret.length >= 64 ? Buffer.from(secret.slice(32, 64)).toString('base64') : decryptKeyB64;
+      allKeys[version] = { signingKeyB64, decryptKeyB64 };
+      log.info('xchat', `[ensureKeys] recovered key version ${version} for user ${userId}`);
+    } catch (err: any) {
+      log.warn('xchat', `[ensureKeys] failed to recover version ${version}: ${err.message}`);
+      await keyRecoveryHistory.append({ userId, timestamp: new Date().toISOString(), success: false, error: `version ${version}: ${err.message}` });
+    }
   }
-  const configJson = JSON.stringify({ sdk_config: jbConfig.key_store_token_map_json, tokens, max_guess_count: jbConfig.max_guess_count });
 
-  const secret = await recover(xchat.pin, configJson, userId, juiceboxLogger);
-  const decryptKeyB64 = Buffer.from(secret.slice(0, 32)).toString('base64');
-  const signingKeyB64 = secret.length >= 64 ? Buffer.from(secret.slice(32, 64)).toString('base64') : decryptKeyB64;
-  const private_key = JSON.stringify({ signingKeyB64, decryptKeyB64, keyVersion: signingKeyVersion });
+  if (Object.keys(allKeys).length === 0) return null;
 
-  await userXChatStorage.save({ ...xchat, private_key, signing_key_version: signingKeyVersion });
-  await keyRecoveryHistory.append({ userId, timestamp: new Date().toISOString(), success: true, recovered_key_version: signingKeyVersion, previous_key_version: previousKeyVersion, previous_key: previousKey, recovered_key: private_key });
-  log.info('xchat', `[ensureKeys] recovered and cached keys for user ${userId}`);
-  return { private_key, signing_key_version: signingKeyVersion };
+  // Persist all recovered keys
+  const versions = Object.keys(allKeys).sort((a, b) => Number(a) - Number(b));
+  const latestVersion = versions[versions.length - 1];
+  await userXChatStorage.save({ ...xchat, private_keys: allKeys, signing_key_version: latestVersion });
+  await keyRecoveryHistory.append({ userId, timestamp: new Date().toISOString(), success: true, recovered_key_version: versions.join(',') });
+  log.info('xchat', `[ensureKeys] cached ${versions.length} key version(s) for user ${userId}`);
+  return { allKeys, latestVersion, latest: allKeys[latestVersion] };
 }
 
 export const unlockKeys = async (req: Request, res: Response) => {
@@ -849,7 +986,7 @@ export const unlockKeys = async (req: Request, res: Response) => {
         res.json({ success: true, unlocked: false, reason: "PIN not set or no public keys on server" });
         return;
       }
-      res.json({ success: true, unlocked: true, signing_key_version: result.signing_key_version });
+      res.json({ success: true, unlocked: true, signing_key_version: result.latestVersion, key_count: Object.keys(result.allKeys).length });
     } catch (err: any) {
       log.warn('xchat', `[unlock] Juicebox recovery failed: ${err.message}`);
       await keyRecoveryHistory.append({ userId, timestamp: new Date().toISOString(), success: false, error: err.message });
@@ -860,6 +997,123 @@ export const unlockKeys = async (req: Request, res: Response) => {
     const status = error.status || 500;
     const message = error.message?.includes('<!DOCTYPE') ? `${status} Error` : error.message || 'Unknown error';
     res.status(status).json({ error: message });
+  }
+};
+
+/** Unlock a single key version with a specific PIN. */
+export const unlockKeyVersion = async (req: Request, res: Response) => {
+  try {
+    const { id: integrationId, version } = req.params;
+    const { auth: authType } = req.query;
+    const { pin } = req.body;
+
+    if (!pin || !/^[0-9]{4}$/.test(pin)) {
+      res.status(400).json({ error: "PIN must be exactly 4 digits" });
+      return;
+    }
+
+    const resolved = await resolveAuth(integrationId, authType as string);
+    if (!resolved) { res.status(400).json({ error: "Integration not found or invalid auth" }); return; }
+
+    const userId = await resolveUserId(integrationId);
+    if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
+
+    const xchat = await userXChatStorage.load(userId) ?? { id: userId };
+
+    // Fetch the specific version's juicebox_config
+    const pkData = await resolved.client.users.getUsersPublicKey(userId, {
+      'public_key.fields': ['public_key_version', 'public_key', 'signing_public_key', 'juicebox_config'] as any,
+    }) as any;
+    const entries = Array.isArray(pkData?.data) ? pkData.data : pkData?.data ? [pkData.data] : [];
+    const entry = entries.find((e: any) => String(e.public_key_version) === version);
+    if (!entry) {
+      res.status(404).json({ error: `Key version ${version} not found on server` });
+      return;
+    }
+
+    const jbConfig = entry.juicebox_config ?? entry.token_map;
+    if (!jbConfig?.key_store_token_map_json) {
+      res.status(400).json({ error: `No juicebox_config for version ${version}` });
+      return;
+    }
+
+    try {
+      const configJson = buildJuiceboxConfigJson(jbConfig);
+      const secret = await recover(pin, configJson, userId, juiceboxLogger);
+      const decryptKeyB64 = Buffer.from(secret.slice(0, 32)).toString('base64');
+      const signingKeyB64 = secret.length >= 64 ? Buffer.from(secret.slice(32, 64)).toString('base64') : decryptKeyB64;
+      const kp: KeyPair = { signingKeyB64, decryptKeyB64 };
+
+      const allKeys = { ...(xchat.private_keys || {}), [version]: kp };
+      const pins = { ...(xchat.pins || {}), [version]: pin };
+      await userXChatStorage.save({ ...xchat, private_keys: allKeys, pins });
+
+      log.info('xchat', `[unlockVersion] recovered key version ${version} for user ${userId}`);
+      await keyRecoveryHistory.append({ userId, timestamp: new Date().toISOString(), success: true, recovered_key_version: version });
+      res.json({ success: true, unlocked: true, version });
+    } catch (err: any) {
+      log.warn('xchat', `[unlockVersion] recovery failed for version ${version}: ${err.message}`);
+      await keyRecoveryHistory.append({ userId, timestamp: new Date().toISOString(), success: false, error: `version ${version}: ${err.message}` });
+      res.json({ success: true, unlocked: false, reason: err.message });
+    }
+  } catch (error: any) {
+    log.error('xchat', `unlockKeyVersion failed:`, error.message || error);
+    res.status(error.status || 500).json({ error: error.message || "Unknown error" });
+  }
+};
+
+/** Change PIN for a specific key version on Juicebox. */
+export const changePinForVersion = async (req: Request, res: Response) => {
+  try {
+    const { id: integrationId, version } = req.params;
+    const { auth: authType } = req.query;
+    const { newPin } = req.body;
+
+    if (!newPin || !/^[0-9]{4}$/.test(newPin)) {
+      res.status(400).json({ error: "New PIN must be exactly 4 digits" });
+      return;
+    }
+
+    const resolved = await resolveAuth(integrationId, authType as string);
+    if (!resolved) { res.status(400).json({ error: "Integration not found or invalid auth" }); return; }
+
+    const userId = await resolveUserId(integrationId);
+    if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
+
+    const xchat = await userXChatStorage.load(userId);
+    if (!xchat) { res.status(400).json({ error: "No xchat entry" }); return; }
+
+    const kp = xchat.private_keys?.[version];
+    if (!kp) {
+      res.status(400).json({ error: `Key version ${version} not unlocked. Unlock it first.` });
+      return;
+    }
+
+    // Fetch fresh juicebox_config for this version
+    const pkData = await resolved.client.users.getUsersPublicKey(userId, {
+      'public_key.fields': ['public_key_version', 'public_key', 'signing_public_key', 'juicebox_config'] as any,
+    }) as any;
+    const entries = Array.isArray(pkData?.data) ? pkData.data : pkData?.data ? [pkData.data] : [];
+    const entry = entries.find((e: any) => String(e.public_key_version) === version);
+    const jbConfig = entry?.juicebox_config ?? entry?.token_map;
+    if (!jbConfig?.key_store_token_map_json) {
+      res.status(400).json({ error: `No juicebox_config for version ${version}` });
+      return;
+    }
+
+    const secret = Buffer.concat([Buffer.from(kp.decryptKeyB64, 'base64'), Buffer.from(kp.signingKeyB64, 'base64')]);
+    const configJson = buildJuiceboxConfigJson(jbConfig);
+    await juiceboxRegister(newPin, secret, configJson, userId, juiceboxLogger);
+
+    // Save new PIN for this version
+    const pins = { ...(xchat.pins || {}), [version]: newPin };
+    await userXChatStorage.save({ ...xchat, pins });
+
+    log.info('xchat', `[changePinVersion] PIN changed for version ${version}, user ${userId}`);
+    res.json({ success: true, version });
+  } catch (error: any) {
+    log.error('xchat', `changePinForVersion failed:`, error.message || error);
+    res.status(error.status || 500).json({ error: error.message || "Unknown error" });
   }
 };
 
@@ -880,20 +1134,24 @@ export const reactToMessage = async (req: Request, res: Response) => {
     const userId = await resolveUserId(integrationId);
     if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
 
-    const keysResult = await ensureKeys(userId, resolved.client);
-    if (!keysResult) { res.status(400).json({ error: "Keys not available" }); return; }
+    const userKeys = await ensureKeys(userId, resolved.client);
+    if (!userKeys) { res.status(400).json({ error: "Keys not available" }); return; }
 
     const canonicalId = toCanonicalConvId(conversationId);
     const apiConvId = toApiConvId(conversationId);
-    const convKeyEntry = await conversationKeyStorage.load(canonicalId);
+    // Always resolve the latest conversation key from API
+    const latest = await resolveLatestConversationKey(resolved.client, apiConvId, canonicalId, userId, userKeys);
+    const convKeyEntry = latest
+      ? { encrypted_conversation_key: latest.encryptedConvKey, key_version: latest.keyVersion }
+      : await conversationKeyStorage.load(canonicalId);
     if (!convKeyEntry?.encrypted_conversation_key) { res.status(400).json({ error: "No conversation key" }); return; }
 
     const messageId = crypto.randomUUID();
     const payload = await encryptReaction(
-      keysResult.private_key, convKeyEntry.encrypted_conversation_key,
+      JSON.stringify(userKeys.latest), convKeyEntry.encrypted_conversation_key,
       message_sequence_id, emoji, !!remove,
       messageId, userId, canonicalId,
-      convKeyEntry.key_version || '1', keysResult.signing_key_version || '1',
+      convKeyEntry.key_version || '1', userKeys.latestVersion,
     );
 
     const response = await resolved.client.chat.sendChatMessage(apiConvId, {
@@ -927,20 +1185,24 @@ export const editMessage = async (req: Request, res: Response) => {
     const userId = await resolveUserId(integrationId);
     if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
 
-    const keysResult = await ensureKeys(userId, resolved.client);
-    if (!keysResult) { res.status(400).json({ error: "Keys not available" }); return; }
+    const userKeys = await ensureKeys(userId, resolved.client);
+    if (!userKeys) { res.status(400).json({ error: "Keys not available" }); return; }
 
     const canonicalId = toCanonicalConvId(conversationId);
     const apiConvId = toApiConvId(conversationId);
-    const convKeyEntry = await conversationKeyStorage.load(canonicalId);
+    // Always resolve the latest conversation key from API
+    const latest = await resolveLatestConversationKey(resolved.client, apiConvId, canonicalId, userId, userKeys);
+    const convKeyEntry = latest
+      ? { encrypted_conversation_key: latest.encryptedConvKey, key_version: latest.keyVersion }
+      : await conversationKeyStorage.load(canonicalId);
     if (!convKeyEntry?.encrypted_conversation_key) { res.status(400).json({ error: "No conversation key" }); return; }
 
     const messageId = crypto.randomUUID();
     const payload = await encryptEdit(
-      keysResult.private_key, convKeyEntry.encrypted_conversation_key,
+      JSON.stringify(userKeys.latest), convKeyEntry.encrypted_conversation_key,
       message_sequence_id, text,
       messageId, userId, canonicalId,
-      convKeyEntry.key_version || '1', keysResult.signing_key_version || '1',
+      convKeyEntry.key_version || '1', userKeys.latestVersion,
     );
 
     const response = await resolved.client.chat.sendChatMessage(apiConvId, {
@@ -1001,7 +1263,7 @@ export const registerKeys = async (req: Request, res: Response) => {
     const { force } = req.body || {};
     try {
       const existingKeys = await resolved.client.users.getUsersPublicKey(userId, {
-        'public_key.fields': ['version', 'public_key', 'signing_public_key'] as any,
+        'public_key.fields': ['public_key_version', 'public_key', 'signing_public_key'] as any,
       }) as any;
 
       if (existingKeys.data && Array.isArray(existingKeys.data) && existingKeys.data.length > 0 && !force) {
@@ -1080,9 +1342,9 @@ export const registerKeys = async (req: Request, res: Response) => {
       try {
         log.debug('xchat', `[register] fetching juicebox_config from public_keys endpoint`);
         const pkData = await resolved.client.users.getUsersPublicKey(userId, {
-          'public_key.fields': ['version', 'public_key', 'signing_public_key', 'juicebox_config'] as any,
+          'public_key.fields': ['public_key_version', 'public_key', 'signing_public_key', 'juicebox_config'] as any,
         }) as any;
-        const freshConfig = pkData.data?.find((k: any) => k.version === version)?.juicebox_config;
+        const freshConfig = pkData.data?.find((k: any) => k.public_key_version === version)?.juicebox_config;
         if (freshConfig) {
           log.info('xchat', `[register] enrolling keys in Juicebox (fresh config) for user ${userId}`);
           const configJson = buildJuiceboxConfigJson(freshConfig);
@@ -1095,15 +1357,16 @@ export const registerKeys = async (req: Request, res: Response) => {
     }
 
     // Step 4: Store keys locally
-    const keysJson = JSON.stringify({
+    const newKeyPair: KeyPair = {
       signingKeyB64: signingScalar.toString('base64'),
       decryptKeyB64: decryptScalar.toString('base64'),
-      keyVersion: version,
-    });
+    };
+    const existingKeys = xchat.private_keys || {};
+    const updatedKeys = { ...existingKeys, [version]: newKeyPair };
 
     await userXChatStorage.save({
       ...xchat,
-      private_key: keysJson,
+      private_keys: updatedKeys,
       signing_key_version: version,
     });
 
@@ -1134,7 +1397,7 @@ export const changePin = async (req: Request, res: Response) => {
 
     // Fetch fresh juicebox_config (tokens expire)
     const pkData = await resolved.client.users.getUsersPublicKey(userId, {
-      'public_key.fields': ['version', 'public_key', 'signing_public_key', 'juicebox_config'] as any,
+      'public_key.fields': ['public_key_version', 'public_key', 'signing_public_key', 'juicebox_config'] as any,
     }) as any;
     const raw = Array.isArray(pkData?.data) ? pkData.data[pkData.data.length - 1] : pkData?.data;
     if (!raw?.public_key) {
@@ -1155,15 +1418,14 @@ export const changePin = async (req: Request, res: Response) => {
     const configJson = JSON.stringify({ sdk_config: jbConfig.key_store_token_map_json, tokens, max_guess_count: jbConfig.max_guess_count });
 
     // Get the secret — use ensureKeys (will recover with stored PIN if needed)
-    const keysResult = await ensureKeys(userId, resolved.client);
-    if (!keysResult) {
+    const userKeys = await ensureKeys(userId, resolved.client);
+    if (!userKeys) {
       res.status(400).json({ error: "Keys not available. Set PIN and unlock first." });
       return;
     }
-    const keys = JSON.parse(keysResult.private_key);
     const secret = Buffer.concat([
-      Buffer.from(keys.decryptKeyB64, 'base64'),
-      Buffer.from(keys.signingKeyB64, 'base64'),
+      Buffer.from(userKeys.latest.decryptKeyB64, 'base64'),
+      Buffer.from(userKeys.latest.signingKeyB64, 'base64'),
     ]);
 
     // Re-register with new PIN
