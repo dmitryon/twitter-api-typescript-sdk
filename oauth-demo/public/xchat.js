@@ -383,6 +383,12 @@ window.XChatUI = (() => {
                 <div class="xchat-media-info">${name}${dimStr}${sizeStr} ${downloadBtn}</div>
               </div>`;
             }
+            if (a.type === 'audio') {
+              return `<div class="xchat-attachment xchat-audio-attachment">
+                🎤 <audio src="/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(a.media_hash_key)}" controls preload="metadata"></audio>
+                <div class="xchat-media-info">${name}${sizeStr} ${downloadBtn}</div>
+              </div>`;
+            }
             return `<div class="xchat-attachment xchat-file-attachment">📎 <strong>${name}</strong> <span class="xchat-file-meta">${a.type || 'file'}${dimStr}${sizeStr}</span> ${downloadBtn}</div>`;
           }).join('') : '';
           // Reactions display
