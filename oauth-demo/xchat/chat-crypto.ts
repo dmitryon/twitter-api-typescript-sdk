@@ -134,6 +134,17 @@ export async function secretboxDecrypt(nonceCiphertext: Buffer, key: Buffer): Pr
 // ECDSA P-256 signing
 // ---------------------------------------------------------------------------
 
+export function ecdsaVerify(signingPublicKeySPKI: string, signatureB64: string, preimage: Buffer): boolean {
+  const pubKeyDer = Buffer.from(signingPublicKeySPKI, 'base64');
+  const key = crypto.createPublicKey({ key: pubKeyDer, format: 'der', type: 'spki' });
+  const sig = Buffer.from(signatureB64, 'base64');
+  // Try standard ECDSA-SHA256 first (X app / sig_version 7)
+  if (crypto.verify('sha256', preimage, { key, dsaEncoding: 'ieee-p1363' }, sig)) return true;
+  // Fallback: double-hash (our SDK signs SHA256(preimage) with sign(null,...) which internally hashes again)
+  const hash = crypto.createHash('sha256').update(preimage).digest();
+  return crypto.verify(null, hash, { key, dsaEncoding: 'ieee-p1363' }, sig);
+}
+
 export function ecdsaSign(privateKeyScalarB64: string, preimage: Buffer): string {
   const scalar = Buffer.from(privateKeyScalarB64, 'base64');
   const ecdh = crypto.createECDH('prime256v1');
@@ -217,6 +228,36 @@ export function getPublicKeySPKI(privateScalarB64: string): string {
 
 // ---------------------------------------------------------------------------
 // Public API
+
+/**
+ * Verify the ECDSA signature on a decoded MessageEvent.
+ * Returns true if valid, false if invalid, null if signature data is missing.
+ */
+export function verifyMessageSignature(event: {
+  message_id?: string;
+  sender_id?: string;
+  conversation_id?: string;
+  detail?: { messageCreateEvent?: { contents?: Buffer | Uint8Array; conversation_key_version?: string } };
+  message_event_signature?: { signature?: string; signing_public_key?: string; signature_version?: string };
+}): boolean | null {
+  const sig = event.message_event_signature;
+  if (!sig?.signature || !sig?.signing_public_key) return null;
+
+  const mce = event.detail?.messageCreateEvent;
+  if (!mce?.contents || !event.message_id || !event.sender_id || !event.conversation_id) return null;
+
+  const contentsB64NoPad = Buffer.from(mce.contents).toString('base64').replace(/=/g, '');
+  const keyVersion = mce.conversation_key_version || '';
+  const preimage = Buffer.from(
+    `MessageCreateEvent,${event.message_id},${event.sender_id},${event.conversation_id},${keyVersion},${contentsB64NoPad}`
+  );
+
+  try {
+    return ecdsaVerify(sig.signing_public_key, sig.signature, preimage);
+  } catch {
+    return false;
+  }
+}
 // ---------------------------------------------------------------------------
 
 export interface SigningKeyPair {
