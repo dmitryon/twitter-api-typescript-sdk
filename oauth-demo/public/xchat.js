@@ -16,6 +16,7 @@ window.XChatUI = (() => {
           </div>
           <div class="xchat-tabs">
             <button class="xchat-tab active" onclick="XChatUI.showTab('conversations')">Conversations</button>
+            <button class="xchat-tab" onclick="XChatUI.showTab('keys')">🔑 Keys</button>
             <button class="xchat-tab" onclick="XChatUI.showTab('xaa')">XAA Subscriptions</button>
           </div>
           <div id="xchatContent" class="xchat-content"></div>
@@ -171,9 +172,10 @@ window.XChatUI = (() => {
 
   function showTab(tab) {
     document.querySelectorAll('.xchat-tab').forEach((el, i) => {
-      el.classList.toggle('active', (i === 0 && tab === 'conversations') || (i === 1 && tab === 'xaa'));
+      el.classList.toggle('active', (i === 0 && tab === 'conversations') || (i === 1 && tab === 'keys') || (i === 2 && tab === 'xaa'));
     });
     if (tab === 'conversations') loadConversations();
+    else if (tab === 'keys') loadKeyManagement();
     else if (tab === 'xaa') loadXAASubscriptions();
   }
 
@@ -367,7 +369,7 @@ window.XChatUI = (() => {
         <input type="file" id="xchatFileInput" accept="image/*" style="display:none" onchange="XChatUI.onFileSelect(event)">
         <button class="btn btn-secondary" onclick="document.getElementById('xchatFileInput').click()">📎</button>
         <div id="xchatPendingMedia" class="pending-media" style="display:none"></div>
-        <input type="text" id="xchatMsgInput" placeholder="Type an encrypted message..." onkeypress="if(event.key==='Enter')XChatUI.sendMessage()">
+        <input type="text" id="xchatMsgInput" placeholder="Type an encrypted message..." oninput="XChatUI.onTypingInput()" onkeypress="if(event.key==='Enter')XChatUI.sendMessage()">
         <button class="btn btn-primary" onclick="XChatUI.sendMessage()">Send</button>
       </div>
     `;
@@ -376,6 +378,20 @@ window.XChatUI = (() => {
   // --- Send ---
 
   let pendingFile = null;
+  let typingStartedAt = null;
+  let lastTypingSentAt = 0;
+  let typingTimeout = null;
+
+  function onTypingInput() {
+    const now = Date.now();
+    if (!typingStartedAt) typingStartedAt = now;
+    if (typingTimeout) clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => { typingStartedAt = null; }, 3000);
+    if (now - typingStartedAt < 2000) return;
+    if (now - lastTypingSentAt < 5000) return;
+    lastTypingSentAt = now;
+    fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/typing?auth=${state.auth}`, { method: 'POST' }).catch(() => {});
+  }
 
   function onFileSelect(event) {
     const file = event.target.files[0];
@@ -422,6 +438,7 @@ window.XChatUI = (() => {
       if (!res.ok) throw new Error(data.error || 'Send failed');
 
       input.value = '';
+      typingStartedAt = null;
       cancelReply();
       clearFile();
       openConversation(state.currentConversation);
@@ -779,6 +796,154 @@ window.XChatUI = (() => {
     }
   }
 
+  // --- Key Management ---
+
+  async function loadKeyManagement() {
+    const content = document.getElementById('xchatContent');
+    content.innerHTML = '<div class="loading">Loading key versions...</div>';
+    try {
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/settings?auth=${state.auth}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      renderKeyManagement(data.xchat);
+    } catch (e) {
+      content.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+    }
+  }
+
+  function renderKeyManagement(xchat) {
+    const content = document.getElementById('xchatContent');
+    const versions = xchat?.key_versions || [];
+
+    const versionsList = versions.length === 0
+      ? '<div class="loading">No key versions found on server</div>'
+      : versions.map(k => {
+          const date = new Date(parseInt(k.version)).toLocaleString();
+          const statusClass = k.unlocked ? 'xchat-key-unlocked' : 'xchat-key-locked';
+          const statusIcon = k.unlocked ? '🔓' : '🔒';
+          const statusText = k.unlocked ? 'Unlocked' : 'Locked';
+          const actions = k.unlocked
+            ? `<button class="btn btn-secondary btn-sm" onclick="XChatUI.showChangePinForVersion('${k.version}')">Change PIN</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="XChatUI.showUnlockVersion('${k.version}')">Unlock</button>`;
+          return `
+            <div class="xchat-key-item ${statusClass}">
+              <div class="xchat-key-info">
+                <span class="xchat-key-version-label">${statusIcon} v${k.version}</span>
+                <span class="xchat-key-date">${date}</span>
+                <span class="xchat-key-status-badge ${k.unlocked ? 'ok' : 'missing'}">${statusText}</span>
+              </div>
+              <div class="xchat-key-actions">${actions}</div>
+            </div>
+          `;
+        }).join('');
+
+    content.innerHTML = `
+      <div class="xchat-key-mgmt">
+        <h3>🔑 Key Versions</h3>
+        <p class="hint">Each version has its own PIN on Juicebox. Unlock individually if they use different PINs.</p>
+        <div class="xchat-key-list">${versionsList}</div>
+        <div class="xchat-key-bulk-actions">
+          <button class="btn btn-secondary btn-sm" onclick="XChatUI.unlockKeys()">🔓 Unlock All (default PIN)</button>
+          <button class="btn btn-secondary btn-sm" onclick="XChatUI.resetPin()">🔑 Re-enter Default PIN</button>
+          <button class="btn btn-danger btn-sm" onclick="XChatUI.confirmReregister()" style="background:#dc3545;color:#fff">⚠️ New Identity</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function showUnlockVersion(version) {
+    const content = document.getElementById('xchatContent');
+    const date = new Date(parseInt(version)).toLocaleString();
+    content.innerHTML = `
+      <div class="xchat-pin-section">
+        <h3>🔓 Unlock Key v${version}</h3>
+        <p>Created: ${date}</p>
+        <p>Enter the 4-digit PIN for this key version:</p>
+        <div class="xchat-pin-form">
+          <input type="password" id="xchatVersionPinInput" placeholder="••••" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off">
+          <button class="btn btn-primary" onclick="XChatUI.unlockVersion('${version}')">Unlock</button>
+          <button class="btn btn-secondary" onclick="XChatUI.showTab('keys')">Cancel</button>
+        </div>
+      </div>
+    `;
+    setTimeout(() => {
+      const input = document.getElementById('xchatVersionPinInput');
+      if (input) { input.focus(); input.addEventListener('keypress', e => { if (e.key === 'Enter') XChatUI.unlockVersion(version); }); }
+    }, 50);
+  }
+
+  async function unlockVersion(version) {
+    const pin = document.getElementById('xchatVersionPinInput')?.value.trim();
+    if (!pin || !/^[0-9]{4}$/.test(pin)) { alert('PIN must be exactly 4 digits'); return; }
+    const content = document.getElementById('xchatContent');
+    content.innerHTML = '<div class="loading">🔑 Recovering key from Juicebox...</div>';
+    try {
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/unlock/${version}?auth=${state.auth}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      if (data.unlocked) {
+        content.innerHTML = `<div class="loading">✅ Key v${version} unlocked!</div>`;
+        await new Promise(r => setTimeout(r, 1000));
+      } else {
+        content.innerHTML = `<div class="loading">⚠️ Failed: ${data.reason || 'Wrong PIN?'}</div>`;
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      showTab('keys');
+    } catch (e) {
+      content.innerHTML = `<div class="loading">❌ ${e.message}</div>`;
+      await new Promise(r => setTimeout(r, 2000));
+      showTab('keys');
+    }
+  }
+
+  function showChangePinForVersion(version) {
+    const content = document.getElementById('xchatContent');
+    const date = new Date(parseInt(version)).toLocaleString();
+    content.innerHTML = `
+      <div class="xchat-pin-section">
+        <h3>🔄 Change PIN for Key v${version}</h3>
+        <p>Created: ${date}</p>
+        <p>Enter a new 4-digit PIN for this key version:</p>
+        <div class="xchat-pin-form">
+          <input type="password" id="xchatNewVersionPinInput" placeholder="New PIN" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off">
+          <button class="btn btn-primary" onclick="XChatUI.changePinForVersion('${version}')">Change</button>
+          <button class="btn btn-secondary" onclick="XChatUI.showTab('keys')">Cancel</button>
+        </div>
+      </div>
+    `;
+    setTimeout(() => {
+      const input = document.getElementById('xchatNewVersionPinInput');
+      if (input) { input.focus(); input.addEventListener('keypress', e => { if (e.key === 'Enter') XChatUI.changePinForVersion(version); }); }
+    }, 50);
+  }
+
+  async function changePinForVersion(version) {
+    const newPin = document.getElementById('xchatNewVersionPinInput')?.value.trim();
+    if (!newPin || !/^[0-9]{4}$/.test(newPin)) { alert('PIN must be exactly 4 digits'); return; }
+    const content = document.getElementById('xchatContent');
+    content.innerHTML = '<div class="loading">🔄 Changing PIN on Juicebox...</div>';
+    try {
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/change-pin/${version}?auth=${state.auth}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPin }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      content.innerHTML = `<div class="loading">✅ PIN changed for v${version}!</div>`;
+      await new Promise(r => setTimeout(r, 1000));
+      showTab('keys');
+    } catch (e) {
+      content.innerHTML = `<div class="loading">❌ ${e.message}</div>`;
+      await new Promise(r => setTimeout(r, 2000));
+      showTab('keys');
+    }
+  }
+
   function renderTextWithEntities(text, entities) {
     if (!entities || entities.length === 0) return escapeHtml(text);
     // Sort entities by start_index descending so we can insert HTML without shifting indices
@@ -943,5 +1108,5 @@ window.XChatUI = (() => {
     }
   }
 
-  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit, startReply, cancelReply, showChangePin, changePin, confirmReregister };
+  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit, startReply, cancelReply, showChangePin, changePin, confirmReregister, loadKeyManagement, showUnlockVersion, unlockVersion, showChangePinForVersion, changePinForVersion, onTypingInput };
 })();

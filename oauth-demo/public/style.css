@@ -787,3 +787,20 @@ div.xchat-media-broken { border: 1px dashed #666; padding: 12px; border-radius: 
 .xchat-key-badge { padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
 .xchat-key-badge.ok { background: #d1fae5; color: #065f46; }
 .xchat-key-badge.missing { background: #fee2e2; color: #991b1b; }
+
+/* Key Management Panel */
+.xchat-key-mgmt { padding: 10px 0; }
+.xchat-key-mgmt h3 { margin-bottom: 4px; }
+.xchat-key-mgmt .hint { font-size: 12px; color: #657786; margin-bottom: 12px; }
+.xchat-key-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.xchat-key-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 8px; border: 1px solid #e1e8ed; }
+.xchat-key-item.xchat-key-unlocked { border-color: #a7f3d0; background: #f0fdf4; }
+.xchat-key-item.xchat-key-locked { border-color: #fecaca; background: #fef2f2; }
+.xchat-key-info { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.xchat-key-version-label { font-weight: 600; font-size: 13px; }
+.xchat-key-date { font-size: 11px; color: #657786; }
+.xchat-key-status-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.xchat-key-status-badge.ok { background: #d1fae5; color: #065f46; }
+.xchat-key-status-badge.missing { background: #fee2e2; color: #991b1b; }
+.xchat-key-item .xchat-key-actions { display: flex; gap: 6px; }
+.xchat-key-bulk-actions { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid #e1e8ed; }
