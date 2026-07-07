@@ -26,7 +26,7 @@ import { secretstreamEncryptAsync, createSecretstreamDecryptTransform } from "..
 import crypto from "crypto";
 import fs from "fs/promises";
 import { createReadStream, createWriteStream } from "fs";
-import { Readable, PassThrough } from "stream";
+import { PassThrough } from "stream";
 import path from "path";
 import { __dirname } from "../esm-utils";
 
@@ -805,24 +805,17 @@ export const proxyXChatMedia = async (req: Request, res: Response) => {
       // Pipe client stream to response
       clientStream.pipe(res);
 
-      // Feed the API response into the decrypt transform
-      const reader = response.body.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) { decryptTransform.end(); break; }
-          decryptTransform.write(Buffer.from(value));
-        }
-      } catch (err: any) {
-        decryptTransform.destroy(err);
-      }
+      // Feed the API response (node-fetch Readable) into the decrypt transform
+      const body = response.body as unknown as NodeJS.ReadableStream;
+      body.on('data', (chunk: Buffer) => decryptTransform.write(chunk));
+      body.on('end', () => decryptTransform.end());
+      body.on('error', (err) => decryptTransform.destroy(err));
     } else {
       // No key available — pass through raw (unencrypted or can't decrypt)
       log.warn('xchat', `No conversation key for ${media_hash_key}, streaming raw`);
       res.set('Content-Type', apiContentType);
       if (response.body) {
-        const nodeStream = Readable.fromWeb(response.body as any);
-        nodeStream.pipe(res);
+        (response.body as unknown as NodeJS.ReadableStream).pipe(res);
       } else {
         const buf = Buffer.from(await response.arrayBuffer());
         res.send(buf);

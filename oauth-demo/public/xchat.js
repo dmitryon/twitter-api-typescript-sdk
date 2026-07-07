@@ -380,14 +380,17 @@ window.XChatUI = (() => {
             const isVideo = a.type === 'video' || /\.(mp4|mov|webm|m4v)$/i.test(a.filename || '');
             const isAudio = a.type === 'audio' || /\.(m4a|mp3|ogg|wav|aac)$/i.test(a.filename || '');
             if (isVideo) {
+              const videoId = `vid-${a.media_hash_key}`;
+              const mediaUrl = `/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(a.media_hash_key)}`;
               return `<div class="xchat-attachment xchat-media-attachment">
-                <video src="/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(a.media_hash_key)}" class="xchat-media-inline" controls preload="metadata" onerror="this.classList.add('xchat-media-broken');this.outerHTML='<div class=xchat-media-broken>⚠️ Video unavailable</div>'"></video>
+                <video id="${videoId}" src="${mediaUrl}" class="xchat-media-inline" controls preload="metadata" onloadeddata="XChatUI.enableSeek(this)" onerror="this.classList.add('xchat-media-broken');this.outerHTML='<div class=xchat-media-broken>⚠️ Video unavailable</div>'"></video>
                 <div class="xchat-media-info">${name}${dimStr}${sizeStr} ${downloadBtn}</div>
               </div>`;
             }
             if (isAudio) {
+              const mediaUrl = `/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(a.media_hash_key)}`;
               return `<div class="xchat-attachment xchat-audio-attachment">
-                🎤 <audio src="/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(a.media_hash_key)}" controls preload="metadata"></audio>
+                🎤 <audio src="${mediaUrl}" controls preload="metadata" onloadeddata="XChatUI.enableSeek(this)"></audio>
                 <div class="xchat-media-info">${name}${sizeStr} ${downloadBtn}</div>
               </div>`;
             }
@@ -1149,6 +1152,25 @@ window.XChatUI = (() => {
     }
   }
 
+  function enableSeek(el) {
+    // If Accept-Ranges is already present, seeking works — nothing to do
+    if (el.dataset.seekEnabled) return;
+    el.dataset.seekEnabled = '1';
+    // After initial stream load, reload src to get Range-capable response from cache
+    const currentTime = el.currentTime;
+    const wasPlaying = !el.paused;
+    const src = el.src;
+    // Small delay to ensure cache write is flushed
+    setTimeout(() => {
+      el.src = '';
+      el.src = src;
+      el.addEventListener('loadeddata', () => {
+        el.currentTime = currentTime;
+        if (wasPlaying) el.play();
+      }, { once: true });
+    }, 500);
+  }
+
   async function downloadMedia(mediaHashKey, filename) {
     if (!state.integrationId || !state.currentConversation) return;
     const url = `/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(mediaHashKey)}`;
@@ -1170,5 +1192,5 @@ window.XChatUI = (() => {
     }
   }
 
-  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit, startReply, cancelReply, showChangePin, changePin, confirmReregister, loadKeyManagement, showUnlockVersion, unlockVersion, showChangePinForVersion, changePinForVersion, onTypingInput };
+  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit, startReply, cancelReply, showChangePin, changePin, confirmReregister, loadKeyManagement, showUnlockVersion, unlockVersion, showChangePinForVersion, changePinForVersion, onTypingInput, enableSeek };
 })();

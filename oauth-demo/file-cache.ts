@@ -43,8 +43,21 @@ export class FileCache {
   }
 
   private getCacheFilePath(hash: string, contentType?: string): string {
+    // For legacy files with extensions, check if they exist; new files use no extension
     const ext = contentType ? (CONTENT_TYPE_TO_EXT[contentType] || '') : '';
-    return path.join(this.cacheDir, `${hash}${ext}`);
+    return path.join(this.cacheDir, ext ? `${hash}${ext}` : hash);
+  }
+
+  /** Resolve the actual file path, checking both with and without extension. */
+  private async resolveFilePath(hash: string, contentType?: string): Promise<string | null> {
+    // Try with extension first (legacy), then without
+    if (contentType) {
+      const withExt = path.join(this.cacheDir, `${hash}${CONTENT_TYPE_TO_EXT[contentType] || ''}`);
+      try { await fs.stat(withExt); return withExt; } catch {}
+    }
+    const noExt = path.join(this.cacheDir, hash);
+    try { await fs.stat(noExt); return noExt; } catch {}
+    return null;
   }
 
   async get(key: string): Promise<{ buffer: Buffer; contentType: string } | null> {
@@ -54,7 +67,9 @@ export class FileCache {
       const meta = JSON.parse(metaData);
       if (Date.now() - meta.timestamp >= this.ttl) return null;
 
-      const buffer = await fs.readFile(this.getCacheFilePath(this.getHash(key), meta.contentType));
+      const filePath = await this.resolveFilePath(this.getHash(key), meta.contentType);
+      if (!filePath) return null;
+      const buffer = await fs.readFile(filePath);
       return { buffer, contentType: meta.contentType };
     } catch {
       return null;
@@ -67,7 +82,8 @@ export class FileCache {
       const metaData = await fs.readFile(this.getCacheMetaPath(key), 'utf-8');
       const meta = JSON.parse(metaData);
       if (Date.now() - meta.timestamp >= this.ttl) return null;
-      const filePath = this.getCacheFilePath(this.getHash(key), meta.contentType);
+      const filePath = await this.resolveFilePath(this.getHash(key), meta.contentType);
+      if (!filePath) return null;
       const stat = await fs.stat(filePath);
       return { filePath, contentType: meta.contentType, size: stat.size };
     } catch {
