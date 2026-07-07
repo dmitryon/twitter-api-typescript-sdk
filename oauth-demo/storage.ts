@@ -138,14 +138,23 @@ export class ConversationKeyStorage extends BaseStorage<ConversationKeyEntry> {
   constructor() { super('conversation-keys'); }
 }
 
+export interface KeyPair {
+  signingKeyB64: string;
+  decryptKeyB64: string;
+}
+
 export interface UserXChatEntry {
   id: string; // user ID
-  /** 4-digit numeric PIN set by the user in the X app */
+  /** Default 4-digit numeric PIN (used when per-version PIN not set) */
   pin?: string;
-  /** Cached private key retrieved from Juicebox */
+  /** Per-version PINs: version → PIN. Takes precedence over default `pin`. */
+  pins?: Record<string, string>;
+  /** @deprecated Use private_keys instead. Single key for backward compat. */
   private_key?: string;
-  /** Signing key version from GET /2/users/{id}/public_keys */
+  /** @deprecated Use private_keys instead. */
   signing_key_version?: string;
+  /** Map of key version → private key pair. Supports multi-version recovery. */
+  private_keys?: Record<string, KeyPair>;
 }
 
 export class UserXChatStorage extends BaseStorage<UserXChatEntry> {
