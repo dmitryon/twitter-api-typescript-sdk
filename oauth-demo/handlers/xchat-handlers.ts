@@ -25,6 +25,7 @@ import { recover, register as juiceboxRegister } from "../xchat/juicebox/client"
 import { secretstreamDecryptAsync, secretstreamEncryptAsync } from "../xchat/secretstream";
 import crypto from "crypto";
 import fs from "fs/promises";
+import { createReadStream } from "fs";
 import path from "path";
 import { __dirname } from "../esm-utils";
 
@@ -724,11 +725,11 @@ export const proxyXChatMedia = async (req: Request, res: Response) => {
     }
 
     const cacheKey = `xchat:${conversation_id}:${media_hash_key}`;
-    const cached = await mediaCache.get(cacheKey);
-    if (cached) {
-      res.set('Content-Type', cached.contentType);
-      res.send(cached.buffer);
-      return;
+
+    // Try serving from disk cache with Range support
+    const cachedMeta = await mediaCache.getMeta(cacheKey);
+    if (cachedMeta) {
+      return serveFileWithRanges(req, res, cachedMeta.filePath, cachedMeta.contentType, cachedMeta.size);
     }
 
     const resolved = await resolveAuth(integrationId, authType as string);
@@ -788,13 +789,48 @@ export const proxyXChatMedia = async (req: Request, res: Response) => {
 
     await mediaCache.set(cacheKey, decryptedBuffer, contentType);
 
+    // Serve with Range support
+    const meta = await mediaCache.getMeta(cacheKey);
+    if (meta) {
+      return serveFileWithRanges(req, res, meta.filePath, meta.contentType, meta.size);
+    }
+    // Fallback: send buffer directly
     res.set('Content-Type', contentType);
+    res.set('Content-Length', String(decryptedBuffer.length));
+    res.set('Accept-Ranges', 'bytes');
     res.send(decryptedBuffer);
   } catch (error: any) {
     log.error('xchat', `Media proxy failed:`, error.message || error);
     res.status(error.status || 500).json({ error: error.message || "Unknown error" });
   }
 };
+
+/** Serve a file from disk with HTTP Range request support. */
+function serveFileWithRanges(req: Request, res: Response, filePath: string, contentType: string, fileSize: number) {
+  const range = req.headers.range;
+  if (range) {
+    const match = range.match(/bytes=(\d+)-(\d*)/);
+    if (match) {
+      const start = parseInt(match[1], 10);
+      const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+      res.status(206);
+      res.set({
+        'Content-Type': contentType,
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Content-Length': String(end - start + 1),
+        'Accept-Ranges': 'bytes',
+      });
+      createReadStream(filePath, { start, end }).pipe(res);
+      return;
+    }
+  }
+  res.set({
+    'Content-Type': contentType,
+    'Content-Length': String(fileSize),
+    'Accept-Ranges': 'bytes',
+  });
+  createReadStream(filePath).pipe(res);
+}
 
 function detectContentType(buf: Buffer): string | null {
   if (buf.length < 4) return null;

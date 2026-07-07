@@ -377,13 +377,15 @@ window.XChatUI = (() => {
                 <div class="xchat-media-info">${name}${dimStr}${sizeStr} ${downloadBtn}</div>
               </div>`;
             }
-            if (a.type === 'video') {
+            const isVideo = a.type === 'video' || /\.(mp4|mov|webm|m4v)$/i.test(a.filename || '');
+            const isAudio = a.type === 'audio' || /\.(m4a|mp3|ogg|wav|aac)$/i.test(a.filename || '');
+            if (isVideo) {
               return `<div class="xchat-attachment xchat-media-attachment">
-                <video src="/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(a.media_hash_key)}" class="xchat-media-inline" controls onerror="this.classList.add('xchat-media-broken');this.outerHTML='<div class=xchat-media-broken>⚠️ Video unavailable</div>'"></video>
+                <video src="/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(a.media_hash_key)}" class="xchat-media-inline" controls preload="metadata" onerror="this.classList.add('xchat-media-broken');this.outerHTML='<div class=xchat-media-broken>⚠️ Video unavailable</div>'"></video>
                 <div class="xchat-media-info">${name}${dimStr}${sizeStr} ${downloadBtn}</div>
               </div>`;
             }
-            if (a.type === 'audio') {
+            if (isAudio) {
               return `<div class="xchat-attachment xchat-audio-attachment">
                 🎤 <audio src="/integrations/${state.integrationId}/xchat/media/proxy?auth=${state.auth}&conversation_id=${encodeURIComponent(state.currentConversation)}&media_hash_key=${encodeURIComponent(a.media_hash_key)}" controls preload="metadata"></audio>
                 <div class="xchat-media-info">${name}${sizeStr} ${downloadBtn}</div>

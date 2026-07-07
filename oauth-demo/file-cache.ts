@@ -61,6 +61,20 @@ export class FileCache {
     }
   }
 
+  async getMeta(key: string): Promise<{ filePath: string; contentType: string; size: number } | null> {
+    await this.ensureDir();
+    try {
+      const metaData = await fs.readFile(this.getCacheMetaPath(key), 'utf-8');
+      const meta = JSON.parse(metaData);
+      if (Date.now() - meta.timestamp >= this.ttl) return null;
+      const filePath = this.getCacheFilePath(this.getHash(key), meta.contentType);
+      const stat = await fs.stat(filePath);
+      return { filePath, contentType: meta.contentType, size: stat.size };
+    } catch {
+      return null;
+    }
+  }
+
   async set(key: string, buffer: Buffer, contentType: string): Promise<void> {
     await this.ensureDir();
     try {
