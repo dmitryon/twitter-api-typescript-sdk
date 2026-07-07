@@ -515,6 +515,7 @@ window.XChatUI = (() => {
 
       input.value = '';
       typingStartedAt = null;
+      const replyTo = state.replyTo;
       cancelReply();
       clearFile();
       showUploadStatus('');
@@ -527,6 +528,7 @@ window.XChatUI = (() => {
         created_at: new Date().toISOString(),
         text: text || null,
         attachments: media_hash_key ? [{ media_hash_key, type: 'file' }] : null,
+        reply_to: replyTo ? { sender_id: replyTo.sender_id, sender_display_name: replyTo.sender_display_name, message_text: replyTo.message_text } : null,
         encrypted: false,
         source: 'local',
       });
