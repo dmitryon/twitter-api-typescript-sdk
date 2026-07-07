@@ -287,6 +287,7 @@ export const getXChatMessages = async (req: Request, res: Response) => {
                       filesize_bytes: a.filesize_bytes,
                     })) || null;
                     if (decoded.message.reply_to) msg.reply_to = decoded.message.reply_to;
+                    if (decoded.message.forwarded_message) msg.forwarded_message = decoded.message.forwarded_message;
                     msg.encrypted = false;
                   } else if (decoded?.reaction) {
                     msg.reaction = decoded.reaction;

@@ -166,11 +166,14 @@ window.XChatUI = (() => {
   }
 
   function close() {
+    stopWebhookSSE();
     const modal = document.getElementById('xchatModal');
     if (modal) modal.style.display = 'none';
   }
 
   function showTab(tab) {
+    stopWebhookSSE();
+    state.currentConversation = null;
     document.querySelectorAll('.xchat-tab').forEach((el, i) => {
       el.classList.toggle('active', (i === 0 && tab === 'conversations') || (i === 1 && tab === 'keys') || (i === 2 && tab === 'xaa'));
     });
@@ -251,8 +254,57 @@ window.XChatUI = (() => {
     return `${img}<span class="xchat-msg-sender">${u.name} <span class="xchat-username">@${u.username}</span></span>`;
   }
 
+  // --- Webhook SSE for live message updates ---
+  let webhookSSE = null;
+
+  function startWebhookSSE() {
+    if (webhookSSE) webhookSSE.close();
+    webhookSSE = new EventSource('/webhook-events/stream');
+    webhookSSE.onmessage = async (e) => {
+      try {
+        const event = JSON.parse(e.data);
+        const eventType = event.body?.data?.event_type;
+        if (!eventType?.startsWith('chat.')) return;
+        const payload = event.body?.data?.payload;
+        if (!payload?.conversation_id || !state.currentConversation) return;
+        // Normalize conversation IDs for comparison
+        const normalize = id => id.replace(/-/g, ':');
+        if (normalize(payload.conversation_id) !== normalize(state.currentConversation)) return;
+        // Build message from decrypted webhook data
+        const dec = event.decrypted;
+        if (!dec) return;
+        // Skip reactions/edits — they modify existing messages
+        if (dec.reaction || dec.edit) return;
+        const msg = {
+          id: payload.id,
+          sender_id: payload.sender_id || dec.sender_id,
+          conversation_id: payload.conversation_id,
+          created_at: payload.created_at_msec ? new Date(parseInt(payload.created_at_msec)).toISOString() : new Date().toISOString(),
+          text: dec.text || null,
+          entities: dec.entities || null,
+          attachments: dec.attachments || null,
+          reply_to: dec.reply_to || null,
+          forwarded_message: dec.forwarded_message || null,
+          encrypted: false,
+          source: 'webhook-live',
+        };
+        // Avoid duplicates
+        if (state.messages.find(m => m.id === msg.id)) return;
+        // Lookup sender if needed
+        if (msg.sender_id && !userCache[msg.sender_id]) await lookupUsers([msg.sender_id]);
+        state.messages.push(msg);
+        renderMessages();
+      } catch {}
+    };
+  }
+
+  function stopWebhookSSE() {
+    if (webhookSSE) { webhookSSE.close(); webhookSSE = null; }
+  }
+
   async function openConversation(conversationId) {
     state.currentConversation = conversationId;
+    startWebhookSSE();
     const content = document.getElementById('xchatContent');
     content.innerHTML = '<div class="loading">Loading messages...</div>';
     try {
@@ -311,6 +363,7 @@ window.XChatUI = (() => {
             </div>`;
           }
           const replyHtml = m.reply_to ? `<div class="xchat-reply-preview"><span class="xchat-reply-sender">${m.reply_to.sender_display_name || m.reply_to.sender_id || ''}</span> ${escapeHtml(m.reply_to.message_text || '')}</div>` : '';
+          const forwardedHtml = m.forwarded_message ? `<div class="xchat-forwarded-tag">↪️ Forwarded</div>` : '';
           const textHtml = m.text ? `<div>${renderTextWithEntities(m.text, m.entities)}</div>` : '';
           const attHtml = m.attachments?.length ? m.attachments.map(a => {
             if (a.type === 'url' && a.url) return `<div class="xchat-attachment">🔗 <a href="${a.url}" target="_blank">${a.display_url || a.url}</a></div>`;
@@ -342,6 +395,7 @@ window.XChatUI = (() => {
                 <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''} ${editedTag}</span>
               </div>
               <div class="xchat-msg-body">
+                ${forwardedHtml}
                 ${replyHtml}
                 ${textHtml}
                 ${attHtml}

@@ -114,11 +114,17 @@ export interface DecodedReplyPreview {
   replying_to_message_id?: string;
 }
 
+export interface DecodedForwardedMessage {
+  message_text?: string;
+  entities?: DecodedEntity[];
+}
+
 export interface DecodedMessageContents {
   text?: string;
   entities?: DecodedEntity[];
   attachments?: DecodedAttachment[];
   reply_to?: DecodedReplyPreview;
+  forwarded_message?: DecodedForwardedMessage;
 }
 
 export interface DecodedReaction {
@@ -178,6 +184,13 @@ export function decodeMessageEntryHolder(buf: Buffer): DecodedMessageEntryConten
         sender_display_name: msg.replying_to_preview.sender_display_name,
         replying_to_message_sequence_id: msg.replying_to_preview.replying_to_message_sequence_id,
         replying_to_message_id: msg.replying_to_preview.replying_to_message_id,
+      };
+    }
+
+    if (msg.forwarded_message) {
+      result.forwarded_message = {
+        message_text: msg.forwarded_message.message_text,
+        entities: msg.forwarded_message.entities?.length ? msg.forwarded_message.entities.map(mapEntity) : undefined,
       };
     }
 

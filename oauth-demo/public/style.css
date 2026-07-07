@@ -757,6 +757,7 @@ div.xchat-media-broken { border: 1px dashed #666; padding: 12px; border-radius: 
 .xchat-reply-indicator { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .xchat-reply-preview { border-left: 3px solid #555; padding: 4px 8px; margin-bottom: 4px; font-size: 0.85em; color: #aaa; background: #1a1a1a; border-radius: 4px; }
 .xchat-reply-sender { font-weight: bold; color: #ccc; }
+.xchat-forwarded-tag { font-size: 0.8em; color: #888; font-style: italic; margin-bottom: 2px; }
 .xchat-entity-hashtag { color: #1d9bf0; font-weight: 500; }
 .xchat-entity-mention { color: #1d9bf0; font-weight: 500; }
 .xchat-entity-cashtag { color: #00ba7c; font-weight: 500; }

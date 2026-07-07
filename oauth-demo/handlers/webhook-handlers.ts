@@ -311,6 +311,7 @@ async function decryptXChatWebhook(body: any): Promise<any> {
       filesize_bytes: a.filesize_bytes,
     })),
     reply_to: decoded?.message?.reply_to,
+    forwarded_message: decoded?.message?.forwarded_message,
     decrypted_at: new Date().toISOString(),
   };
 }
