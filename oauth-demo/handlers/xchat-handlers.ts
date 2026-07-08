@@ -19,8 +19,8 @@ import {
   verifyMessageSignature
 } from "../xchat/chat-crypto";
 import { extractContentsFromMessageEvent, decodeMessageEntryHolder } from "../xchat/chat-thrift";
-import { decode } from "../xchat/thrift-codec";
-import { MessageEventSchema } from "../xchat/thrift-models";
+import { decode, encode } from "../xchat/thrift-codec";
+import { MessageEventSchema, MessageDeleteEventSchema } from "../xchat/thrift-models";
 import { recover, register as juiceboxRegister } from "../xchat/juicebox/client";
 import { secretstreamEncryptAsync, createSecretstreamDecryptTransform } from "../xchat/secretstream";
 import crypto from "crypto";
@@ -1278,6 +1278,41 @@ export const editMessage = async (req: Request, res: Response) => {
     res.json(response);
   } catch (error: any) {
     log.error('xchat', `editMessage failed:`, error.message || error);
+    res.status(error.status || 500).json({ error: error.message || "Unknown error" });
+  }
+};
+
+export const deleteMessage = async (req: Request, res: Response) => {
+  try {
+    const { id: integrationId, conversationId } = req.params;
+    const { auth: authType } = req.query;
+    const { message_sequence_id, for_all } = req.body;
+
+    if (!message_sequence_id) {
+      res.status(400).json({ error: "message_sequence_id required" });
+      return;
+    }
+
+    const resolved = await resolveAuth(integrationId, authType as string);
+    if (!resolved) { res.status(400).json({ error: "Invalid auth" }); return; }
+
+    const apiConvId = toApiConvId(conversationId);
+    const messageId = crypto.randomUUID();
+
+    const deleteEvent = encode({
+      sequence_ids: [message_sequence_id],
+      delete_message_action: for_all !== false ? 2 : 1, // 2=DELETE_FOR_ALL, 1=DELETE_FOR_SELF
+    }, MessageDeleteEventSchema);
+
+    const response = await resolved.client.chat.sendChatMessage(apiConvId, {
+      encoded_message_create_event: deleteEvent.toString('base64'),
+      message_id: messageId,
+    });
+
+    log.info('xchat', `Deleted message ${message_sequence_id} (for_all=${for_all !== false})`);
+    res.json(response);
+  } catch (error: any) {
+    log.error('xchat', `deleteMessage failed:`, error.message || error);
     res.status(error.status || 500).json({ error: error.message || "Unknown error" });
   }
 };

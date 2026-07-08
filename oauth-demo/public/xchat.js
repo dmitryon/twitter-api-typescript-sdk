@@ -452,6 +452,7 @@ window.XChatUI = (() => {
                   <button class="xchat-action-btn" onclick="XChatUI.showReactPicker('${m.id}')" title="React">😀</button>
                   <button class="xchat-action-btn" onclick="XChatUI.startReply('${m.id}')" title="Reply">↩️</button>
                   ${isSelf && m.text ? `<button class="xchat-action-btn" onclick="XChatUI.startEdit('${m.id}', this)" title="Edit">✏️</button>` : ''}
+                  ${isSelf ? `<button class="xchat-action-btn" onclick="XChatUI.deleteMessage('${m.id}')" title="Delete">🗑️</button>` : ''}
                 </div>` : ''}
               </div>
             </div>
@@ -1209,6 +1210,22 @@ window.XChatUI = (() => {
     }
   }
 
+  async function deleteMessage(messageId) {
+    if (!confirm('Delete this message for everyone?')) return;
+    try {
+      const res = await fetch(`/integrations/${state.integrationId}/xchat/conversations/${state.currentConversation}/delete?auth=${state.auth}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_sequence_id: messageId, for_all: true }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+      state.messages = state.messages.filter(m => m.id !== messageId);
+      renderMessages(undefined, { scrollToBottom: false });
+    } catch (e) {
+      alert(`Delete failed: ${e.message}`);
+    }
+  }
+
   function enableSeek(el) {
     // If Accept-Ranges is already present, seeking works — nothing to do
     if (el.dataset.seekEnabled) return;
@@ -1249,5 +1266,5 @@ window.XChatUI = (() => {
     }
   }
 
-  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit, startReply, cancelReply, showChangePin, changePin, confirmReregister, loadKeyManagement, showUnlockVersion, unlockVersion, showChangePinForVersion, changePinForVersion, onTypingInput, enableSeek };
+  return { open, close, showTab, openConversation, sendMessage, onFileSelect, clearFile, uploadMedia, createSubscription, deleteSubscription, editSubscription, updateSubscription, loadConversations, savePin, resetPin, unlockKeys, showNewChat, downloadMedia, loadOlderMessages, registerKeys, checkPinAndShow, showReactPicker, sendReaction, startEdit, submitEdit, startReply, cancelReply, showChangePin, changePin, confirmReregister, loadKeyManagement, showUnlockVersion, unlockVersion, showChangePinForVersion, changePinForVersion, onTypingInput, enableSeek, deleteMessage };
 })();
