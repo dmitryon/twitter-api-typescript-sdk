@@ -20,7 +20,7 @@ import {
 } from "../xchat/chat-crypto";
 import { extractContentsFromMessageEvent, decodeMessageEntryHolder } from "../xchat/chat-thrift";
 import { decode, encode } from "../xchat/thrift-codec";
-import { MessageEventSchema, MessageDeleteEventSchema } from "../xchat/thrift-models";
+import { MessageEventSchema } from "../xchat/thrift-models";
 import { recover, register as juiceboxRegister } from "../xchat/juicebox/client";
 import { secretstreamEncryptAsync, createSecretstreamDecryptTransform } from "../xchat/secretstream";
 import crypto from "crypto";
@@ -1296,16 +1296,38 @@ export const deleteMessage = async (req: Request, res: Response) => {
     const resolved = await resolveAuth(integrationId, authType as string);
     if (!resolved) { res.status(400).json({ error: "Invalid auth" }); return; }
 
-    const apiConvId = toApiConvId(conversationId);
-    const messageId = crypto.randomUUID();
+    const userId = await resolveUserId(integrationId);
+    if (!userId) { res.status(400).json({ error: "Could not resolve user ID" }); return; }
 
-    const deleteEvent = encode({
-      sequence_ids: [message_sequence_id],
-      delete_message_action: for_all !== false ? 2 : 1, // 2=DELETE_FOR_ALL, 1=DELETE_FOR_SELF
-    }, MessageDeleteEventSchema);
+    const userKeys = await ensureKeys(userId, resolved.client);
+    if (!userKeys) { res.status(400).json({ error: "Keys not available" }); return; }
+
+    const apiConvId = toApiConvId(conversationId);
+    const canonicalId = toCanonicalConvId(conversationId);
+    const messageId = crypto.randomUUID();
+    const action = for_all !== false ? 2 : 1; // 2=DELETE_FOR_ALL, 1=DELETE_FOR_SELF
+
+    // Encode MessageEventDetail with messageDeleteEvent (field 7)
+    const { MessageEventDetailSchema } = await import("../xchat/thrift-models");
+    const detailThrift = encode({
+      messageDeleteEvent: {
+        sequence_ids: [message_sequence_id],
+        delete_message_action: action,
+      },
+    }, MessageEventDetailSchema);
+
+    // Sign: preimage = "MessageDeleteEvent,{msgId},{senderId},{convId},{action},{seqId}"
+    const { encodeMessageEventSignature } = await import("../xchat/chat-thrift");
+    const preimage = Buffer.from(
+      `MessageDeleteEvent,${messageId},${userId},${canonicalId},${action},${message_sequence_id}`
+    );
+    const signatureB64 = ecdsaSign(userKeys.latest.signingKeyB64, preimage);
+    const signingPublicKeySPKI = getPublicKeySPKI(userKeys.latest.signingKeyB64);
+    const sigThrift = encodeMessageEventSignature(signatureB64, userKeys.latestVersion, signingPublicKeySPKI);
 
     const response = await resolved.client.chat.sendChatMessage(apiConvId, {
-      encoded_message_create_event: deleteEvent.toString('base64'),
+      encoded_message_create_event: detailThrift.toString('base64'),
+      encoded_message_event_signature: sigThrift.toString('base64'),
       message_id: messageId,
     });
 
