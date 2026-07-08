@@ -744,6 +744,9 @@ div.xchat-media-broken { border: 1px dashed #666; padding: 12px; border-radius: 
 .xchat-reaction-avatar { width: 14px; height: 14px; border-radius: 50%; }
 .xchat-reaction-emoji { line-height: 1; }
 .xchat-edited { font-size: 0.75em; color: #777; font-style: italic; }
+.xchat-ttl { font-size: 0.75em; color: #f59e0b; font-style: italic; }
+.xchat-ttl-expired { color: #ef4444; text-decoration: line-through; }
+.xchat-msg-expired { opacity: 0.5; border-left: 2px solid #ef4444; }
 .xchat-msg-actions { display: flex; gap: 4px; margin-top: 4px; opacity: 0; transition: opacity 0.15s; }
 .xchat-message:hover .xchat-msg-actions { opacity: 1; }
 .xchat-action-btn { background: none; border: 1px solid #444; border-radius: 4px; padding: 1px 5px; font-size: 0.75em; cursor: pointer; }

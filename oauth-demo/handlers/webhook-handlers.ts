@@ -312,6 +312,7 @@ async function decryptXChatWebhook(body: any): Promise<any> {
     })),
     reply_to: decoded?.message?.reply_to,
     forwarded_message: decoded?.message?.forwarded_message,
+    ttl_msec: fullEvent.detail?.messageCreateEvent?.ttl_msec || undefined,
     decrypted_at: new Date().toISOString(),
   };
 }

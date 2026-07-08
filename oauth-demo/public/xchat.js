@@ -273,8 +273,32 @@ window.XChatUI = (() => {
         // Build message from decrypted webhook data
         const dec = event.decrypted;
         if (!dec) return;
-        // Skip reactions/edits — they modify existing messages
-        if (dec.reaction || dec.edit) return;
+        // Handle reactions — apply to target message
+        if (dec.reaction) {
+          const target = state.messages.find(m => m.id === dec.reaction.message_sequence_id);
+          if (target) {
+            if (!target.reactions) target.reactions = [];
+            if (dec.reaction.action === 'add') {
+              target.reactions.push({ emoji: dec.reaction.emoji, sender_id: payload.sender_id || dec.sender_id });
+            } else {
+              const sid = payload.sender_id || dec.sender_id;
+              target.reactions = target.reactions.filter(r => !(r.emoji === dec.reaction.emoji && r.sender_id === sid));
+            }
+            renderMessages(undefined, { scrollToBottom: false });
+          }
+          return;
+        }
+        // Handle edits — apply to target message
+        if (dec.edit) {
+          const target = state.messages.find(m => m.id === dec.edit.message_sequence_id);
+          if (target) {
+            target.text = dec.edit.updated_text;
+            target.entities = dec.edit.entities || null;
+            target.edited = true;
+            renderMessages(undefined, { scrollToBottom: false });
+          }
+          return;
+        }
         const msg = {
           id: payload.id,
           sender_id: payload.sender_id || dec.sender_id,
@@ -285,13 +309,12 @@ window.XChatUI = (() => {
           attachments: dec.attachments || null,
           reply_to: dec.reply_to || null,
           forwarded_message: dec.forwarded_message || null,
+          ttl_msec: dec.ttl_msec || null,
           encrypted: false,
           source: 'webhook-live',
         };
-        // Avoid duplicates
+        // Avoid duplicates (covers optimistic sends from UI)
         if (state.messages.find(m => m.id === msg.id)) return;
-        // Skip our own messages (already added optimistically on send)
-        if (msg.sender_id === state.userId) return;
         // Lookup sender if needed
         if (msg.sender_id && !userCache[msg.sender_id]) await lookupUsers([msg.sender_id]);
         state.messages.push(msg);
@@ -404,11 +427,19 @@ window.XChatUI = (() => {
           // Reactions display
           const reactionsHtml = m.reactions?.length ? `<div class="xchat-reactions">${m.reactions.map(r => { const u = userCache[r.sender_id]; const name = u ? `@${u.username}` : r.sender_id; const isOwn = r.sender_id === state.userId; return `<span class="xchat-reaction${isOwn ? ' xchat-reaction-own' : ''}" title="${name}${isOwn ? ' (click to remove)' : ''}" onclick="XChatUI.sendReaction('${m.id}', '${r.emoji}', true)"><span class="xchat-reaction-emoji">${r.emoji}</span>${u?.profile_image_url ? `<img src="/media/proxy/public?url=${encodeURIComponent(u.profile_image_url)}" class="xchat-reaction-avatar" onerror="this.style.display='none'">` : ''}</span>`; }).join('')}</div>` : '';
           const editedTag = m.edited ? '<span class="xchat-edited">(edited)</span>' : '';
+          const ttlTag = m.ttl_msec ? (() => {
+            const expiresAt = new Date(new Date(m.created_at).getTime() + m.ttl_msec);
+            const expired = Date.now() > expiresAt.getTime();
+            const dur = m.ttl_msec >= 60000 ? `${Math.round(m.ttl_msec/60000)}m` : `${Math.round(m.ttl_msec/1000)}s`;
+            return expired
+              ? `<span class="xchat-ttl xchat-ttl-expired" title="Expired at ${expiresAt.toLocaleString()}">⏱️ ${dur} expired</span>`
+              : `<span class="xchat-ttl" title="Disappears at ${expiresAt.toLocaleString()}">⏱️ ${dur}</span>`;
+          })() : '';
           return `
-            <div class="xchat-message ${isSelf ? 'xchat-msg-self' : ''}" data-msg-id="${m.id}">
+            <div class="xchat-message ${isSelf ? 'xchat-msg-self' : ''}${m.ttl_msec && Date.now() > new Date(m.created_at).getTime() + m.ttl_msec ? ' xchat-msg-expired' : ''}" data-msg-id="${m.id}">
               <div class="xchat-msg-meta">
                 ${renderUser(m.sender_id, isSelf)}
-                <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''} ${editedTag}</span>
+                <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''} ${editedTag} ${ttlTag}</span>
               </div>
               <div class="xchat-msg-body">
                 ${forwardedHtml}

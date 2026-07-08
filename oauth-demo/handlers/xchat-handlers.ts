@@ -264,8 +264,12 @@ export const getXChatMessages = async (req: Request, res: Response) => {
               }
               msg.signature_valid = sigValid;
 
+              // Extract TTL if present
+              const mce = fullEvent.detail?.messageCreateEvent;
+              if (mce?.ttl_msec) msg.ttl_msec = mce.ttl_msec;
+
               // Look up key by version from MessageCreateEvent, fallback to trying all
-              const mceVersion = fullEvent.detail?.messageCreateEvent?.conversation_key_version || '';
+              const mceVersion = mce?.conversation_key_version || '';
               const keysToTry = convKeysByVersion.has(mceVersion)
                 ? [convKeysByVersion.get(mceVersion)!]
                 : [...convKeysByVersion.values()];
