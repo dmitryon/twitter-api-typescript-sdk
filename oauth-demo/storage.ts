@@ -149,11 +149,7 @@ export interface UserXChatEntry {
   pin?: string;
   /** Per-version PINs: version → PIN. Takes precedence over default `pin`. */
   pins?: Record<string, string>;
-  /** @deprecated Use private_keys instead. Single key for backward compat. */
-  private_key?: string;
-  /** @deprecated Use private_keys instead. */
-  signing_key_version?: string;
-  /** Map of key version → private key pair. Supports multi-version recovery. */
+  /** Map of key version → private key pair. */
   private_keys?: Record<string, KeyPair>;
 }
 
