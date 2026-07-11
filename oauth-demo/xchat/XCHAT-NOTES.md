@@ -970,3 +970,108 @@ The only way to determine if a conversation is encrypted is to fetch events via 
 2. No key exchange has occurred yet (new conversation between enrolled users)
 
 There is no `is_encrypted` field. Fields like `screen_capture_blocking_enabled` and `screen_capture_detection_enabled` are defined in the OpenAPI spec and can be requested, but are not returned even for known-encrypted conversations.
+
+### Message deletion is GraphQL-only, not available via REST API (2026-07-08)
+
+The REST API `POST /2/chat/conversations/{id}/messages` (`sendChatMessage`) only accepts `MessageCreateEvent` payloads. Sending a `MessageEventDetail` with a `messageDeleteEvent` (field 7) returns HTTP 200 but the response `encoded_message_event` contains a `messageFailureEvent` with `failure_type: 14` (undocumented, beyond the known enum 1-9).
+
+**Known FailureType values** (from `chat-xdk` Rust source):
+| Value | Name |
+|-------|------|
+| 1 | EMPTY_DETAIL |
+| 2 | INTERNAL_ERROR |
+| 3 | CONTENTS_TOO_LARGE |
+| 4 | TOO_MANY_MESSAGES |
+| 5 | INVALID_SENDER_SIGNATURE |
+| 6 | NON_LATEST_CKEY_VERSION |
+| 7 | RECIPIENT_HAS_NOT_TRUSTED_CONVERSATION |
+| 8 | RECIPIENT_KEY_HAS_CHANGED |
+| 9 | ONLY_ENCRYPTED_MESSAGES_ALLOWED |
+| 14 | Unknown — returned when sending MessageDeleteEvent via REST |
+
+**How the X app deletes messages**: GraphQL mutation `DeleteMessageMutation` at `POST https://api.x.com/graphql/4gsDQKEmYkOtvsSIpHXdQA/DeleteMessageMutation` with session-based auth (cookies + `x-csrf-token`). The request body has `variables` as a JSON-encoded string containing:
+```json
+{
+  "sequence_ids": ["<message_id>"],
+  "conversation_id": "<canonical_id>",
+  "delete_message_action": "DeleteForAll",
+  "action_signatures": [{
+    "encoded_message_event_detail": "<base64 thrift MessageEventDetail with field 7>",
+    "message_event_signature": {
+      "public_key_version": "<version>",
+      "signature": "<base64 ECDSA signature>",
+      "signature_version": "7",
+      "signing_public_key": null
+    },
+    "message_id": "<uuid>",
+    "signature_payload": "MessageDeleteEvent,<msgId>,<senderId>,<convId>,<action>,<seqId>"
+  }]
+}
+```
+
+Response: `{"data":{"xchat_delete_messages":{"__typename":"DeleteMessageResponse"}}}`
+
+**OAuth2 tokens cannot call this endpoint** — returns 403 with empty body. The GraphQL endpoint requires web session authentication (cookies), not OAuth2 bearer tokens.
+
+**However, delete events sent via GraphQL DO appear in the events timeline** as proper `messageDeleteEvent` entries with `relay_source: 1`, `is_trusted: true`, and a full `message_event_signature`. Example decoded event:
+```json
+{
+  "sequence_id": "2074805751617384448",
+  "message_id": "99f595d0-...",
+  "sender_id": "2055625073969508352",
+  "detail": {
+    "messageDeleteEvent": {
+      "sequence_ids": ["2074584766276386817"],
+      "delete_message_action": 2
+    }
+  },
+  "relay_source": 1,
+  "is_trusted": true,
+  "message_event_signature": { ... }
+}
+```
+The REST `sendChatMessage` endpoint rejects these (failure_type 14), but the GraphQL mutation creates them successfully and they propagate to all participants via the events timeline.
+
+**Note on `sendChatMessage` response handling**: The REST API returns HTTP 200 even on failure — the error is encoded in the thrift `encoded_message_event` response field as a `messageFailureEvent`. Added `checkMessageFailure()` helper to decode and surface these errors as HTTP 422 in our handlers.
+
+### Per-message TTL (disappearing messages) (2026-07-08)
+
+Individual messages can have a TTL set via `ttl_msec` (field 103) on `MessageCreateEvent`. This is separate from the conversation-level `message_ttl_msec` setting.
+
+**How it works**:
+- Set `ttl_msec` on the `MessageCreateEvent` thrift struct when encrypting/encoding the message
+- The API accepts it and the message is delivered normally
+- The X app enforces the TTL client-side — after the timer expires, the message is hidden from the UI
+- Server-side deletion is delayed: a 5-second TTL resulted in ~30 seconds before the message disappeared from the events timeline
+- There is no server push notification when a message expires — clients must track timers locally
+
+**Related thrift schemas**:
+- `MessageCreateEvent` field 103: `ttl_msec` (i64) — per-message TTL
+- `MessageDurationChangeEvent` field 1: `ttl_msec` (i64) — conversation-level TTL change event
+- `MessageDurationRemoveEvent` field 1: `current_ttl_msec` (i64) — TTL removal event
+- `MessageEventDetail` field 8: `messageDurationChangeEvent` — wrapper for TTL change
+- `MessageEventDetail` field 9: `messageDurationRemoveEvent` — wrapper for TTL removal
+
+**Conversation-level TTL**: The `message_ttl_msec` field on conversation metadata (returned by `GET /2/chat/conversations`) indicates the default TTL for all messages in that conversation. Per-message TTL overrides this.
+
+**Webhook delivery**: TTL messages are delivered via webhooks like normal messages. The `ttl_msec` field is present in the decoded `MessageCreateEvent` and can be extracted from `fullEvent.detail?.messageCreateEvent?.ttl_msec`.
+
+### Reactions quirks (2026-07-08)
+
+**Reactions use the same encryption/signing flow as regular messages**. The signature preimage is identical: `MessageCreateEvent,{msgId},{senderId},{convId},{keyVersion},{contentsB64NoPad}` — the server doesn't know or care whether the encrypted payload is a message, reaction, or edit.
+
+**Multiple reactions per user**: A user can add multiple different emoji reactions to the same message. Each is a separate encrypted event. Removing a reaction also requires sending a separate `reaction_remove` event.
+
+**Reaction events reference parent by sequence_id**: The encrypted payload contains `message_sequence_id` pointing to the target message. If the target message is not in the current page of events, the reaction appears as an orphan.
+
+**Reactions are NOT included in the `sendChatMessage` response**: When you send a reaction, the response `encoded_message_event` only confirms the event was accepted (returns the event metadata). It does not echo back the reaction content.
+
+**Reactions on expired/deleted messages**: Reactions can still be sent to messages that have expired (TTL) or been deleted. The server accepts them without error. The X app simply doesn't display reactions on messages that are no longer visible.
+
+**Edit quirk — no server-side author validation (CONFIRMED)**: Edits use the same flow. The encrypted payload contains `message_edit` with `message_sequence_id` and `updated_text`. The server does NOT validate that the edit sender is the original message author — any conversation participant can send an edit event targeting any other participant's messages, and the server accepts it with a new `sequence_id`.
+
+**However, the X app ignores cross-user edits client-side**: After hyenamusk edited hippotalks' message (original text: "nic"), the X app still displayed the original text "nic" — it silently discards edit events where the edit sender doesn't match the original message sender. The edit event IS present in the conversation events response (and our UI applied it), but the X app's rendering logic filters it out.
+
+**Implication for our UI**: We should also validate that `edit.sender_id === original_message.sender_id` before applying edits, otherwise a malicious participant could alter displayed text in our client.
+
+**Edit quirk — no target type validation**: The server also doesn't validate that the edit target is a regular message. In testing, hyenamusk "edited" a `messageDeleteEvent` (not a message) and the server accepted it. The X app UI showed "you edited..." regardless of the target event type.
