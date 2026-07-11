@@ -679,19 +679,6 @@ window.XChatUI = (() => {
 
     content.innerHTML = `
       <div class="xchat-xaa-section">
-        <h3>Key Status</h3>
-        <div class="xchat-key-status">
-          <span class="xchat-key-badge ${settings?.has_pin ? 'ok' : 'missing'}">${settings?.has_pin ? '✓ PIN set' : '✗ No PIN'}</span>
-          <span class="xchat-key-badge ${settings?.has_private_key ? 'ok' : 'missing'}">${settings?.has_private_key ? '✓ Private key cached' : '✗ Private key not cached'}</span>
-        </div>
-        <div class="xchat-key-actions">
-          <button class="btn btn-secondary btn-sm" onclick="XChatUI.resetPin()">🔑 Re-enter PIN</button>
-          <button class="btn btn-secondary btn-sm" onclick="XChatUI.unlockKeys()">🔓 Unlock Keys</button>
-          <button class="btn btn-secondary btn-sm" onclick="XChatUI.showChangePin()">🔄 Change PIN</button>
-          <button class="btn btn-danger btn-sm" onclick="XChatUI.confirmReregister()" style="background:#dc3545;color:#fff">⚠️ New Identity</button>
-        </div>
-      </div>
-      <div class="xchat-xaa-section">
         <h3>Active Subscriptions</h3>
         ${subsList}
       </div>
