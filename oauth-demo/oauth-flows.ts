@@ -8,7 +8,7 @@ type Token = auth.Token;
 type AuthState = types.AuthState;
 type QueryString = ParsedQs;
 
-const OAUTH2_SCOPES: OAuth2Scopes[] = ["tweet.read", "tweet.write", "users.read", "follows.read", "dm.read", "dm.write", "media.write", "offline.access",
+export const OAUTH2_SCOPES: OAuth2Scopes[] = ["tweet.read", "tweet.write", "users.read", "follows.read", "dm.read", "dm.write", "media.write", "offline.access",
     // like.read is required due to a recent bug with user subscriptions
     "like.read"];
 

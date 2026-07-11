@@ -3,8 +3,7 @@ import { Integration } from "./types";
 import { CredentialsStorage, AccessTokenStorage, IntegrationStorage, TokenHistoryStorage } from "./storage";
 import { log } from "./logger";
 import { apiLogger } from "./api-logger";
-
-const OAUTH2_SCOPES = ["tweet.read", "tweet.write", "users.read", "follows.read", "dm.read", "dm.write", "media.write", "offline.access"];
+import { OAUTH2_SCOPES } from "./oauth-flows";
 
 const tokenHistory = new TokenHistoryStorage();
 
