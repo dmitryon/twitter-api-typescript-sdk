@@ -933,7 +933,7 @@ window.XChatUI = (() => {
           const statusIcon = k.unlocked ? '🔓' : '🔒';
           const statusText = k.unlocked ? 'Unlocked' : 'Locked';
           const actions = k.unlocked
-            ? `<button class="btn btn-secondary btn-sm" onclick="XChatUI.showChangePinForVersion('${k.version}')">Change PIN</button>`
+            ? `<button class="btn btn-secondary btn-sm" onclick="XChatUI.showUnlockVersion('${k.version}')">🔓 Force Unlock</button><button class="btn btn-secondary btn-sm" onclick="XChatUI.showChangePinForVersion('${k.version}')">Change PIN</button>`
             : `<button class="btn btn-primary btn-sm" onclick="XChatUI.showUnlockVersion('${k.version}')">Unlock</button>`;
           return `
             <div class="xchat-key-item ${statusClass}">
