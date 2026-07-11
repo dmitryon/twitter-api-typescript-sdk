@@ -19,3 +19,9 @@ oauth-demo/xchat/presentation/
 *.har
 *.jpg
 oauth-demo/scripts/
+examples/list-all-dms-oauth1.ts
+examples/oauth-demo.http
+examples/oauth1-example.ts
+examples/stream-recovery.ts
+examples/webhook-api.http
+examples/webhook-links.ts
