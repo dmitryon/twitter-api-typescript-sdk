@@ -15,3 +15,6 @@ ssl/
 java-models/
 *.pdf
 oauth-demo/xchat/presentation/
+*.wasm
+*.har
+*.jpg
