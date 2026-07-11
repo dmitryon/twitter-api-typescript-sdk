@@ -28,7 +28,7 @@
     "yarn": "^1.22.22"
   },
   "engines": {
-    "node": ">=14"
+    "node": ">=22"
   },
   "devDependencies": {
     "@apidevtools/json-schema-ref-parser": "^9.0.9",

@@ -159,6 +159,7 @@ const response = await authClient.revokeAccessToken();
 
 Note this is only for developers who want to contribute code to the SDK
 
+**Requires Node.js 22+**
 
 ### Clone the Repository
 
