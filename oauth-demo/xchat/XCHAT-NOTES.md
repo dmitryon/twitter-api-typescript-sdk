@@ -315,7 +315,7 @@ The settings endpoint should return a `needs_registration` flag:
 | No keys on server | `false` | `true` | Show "Set up X Chat encryption" |
 
 Detection logic:
-1. Check local cache (`data/user-xchat/{userId}.json`) for `private_key`
+1. Check local cache (`data/user-xchat/{userId}.json`) for `private_keys`
 2. If not cached, call `GET /2/users/{userId}/public_keys`
 3. If response has `public_key` field → enrolled, needs recovery
 4. If response is empty `{}` → not enrolled, needs registration
@@ -340,7 +340,7 @@ Pattern unclear — possibly tied to Premium subscription or manual opt-in via S
 
 | Store | Key | Contains |
 |-------|-----|----------|
-| `data/user-xchat/{userId}.json` | user ID | PIN, private_key (JSON with signingKeyB64 + decryptKeyB64), signing_key_version |
+| `data/user-xchat/{userId}.json` | user ID | pin, pins (per-version), private_keys (version → { signingKeyB64, decryptKeyB64 }) |
 | `data/user-public-keys/{userId}.json` | user ID | public_key (SPKI), signing_public_key (SPKI), version, juicebox_config (DO NOT cache for unlock — tokens expire) |
 | `data/conversation-keys/{convId}.json` | conversation ID | encrypted_conversation_key, key_version |
 
@@ -782,7 +782,7 @@ Typing uses the REST API endpoint — **no encryption needed**:
 POST /2/chat/conversations/{id}/typing
 ```
 
-**Status (tested 2026-05-31):** Returns **403 "client-not-enrolled"** — same issue as media download. The endpoint exists in the OpenAPI spec but is not available for our access level.
+**Status:** ✅ Working as of July 2026. ~~(tested 2026-05-31): Returns **403 "client-not-enrolled"** — same issue as media download.~~ The endpoint exists in the OpenAPI spec and is now available. UI sends typing indicators with 2s initial delay and 5s debounce.
 
 ### Reply-To Requires Embedding Original Message Text
 
