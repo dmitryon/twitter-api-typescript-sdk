@@ -14,3 +14,4 @@ src/gen/*.js
 ssl/
 java-models/
 *.pdf
+oauth-demo/xchat/presentation/
