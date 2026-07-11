@@ -188,9 +188,6 @@ async function decryptXChatWebhook(body: any): Promise<any> {
   const allKeysByVersion: Record<string, string> = {};
   if (xchat?.private_keys) {
     for (const [ver, kp] of Object.entries(xchat.private_keys)) allKeysByVersion[ver] = kp.decryptKeyB64;
-  } else if (xchat?.private_key) {
-    const keys = JSON.parse(xchat.private_key);
-    allKeysByVersion['legacy'] = keys.decryptKeyB64;
   }
   const allDecryptKeys = Object.values(allKeysByVersion);
   if (allDecryptKeys.length === 0) throw new Error('no private key for user');
@@ -202,26 +199,24 @@ async function decryptXChatWebhook(body: any): Promise<any> {
   if (payload.conversation_key_change_event) {
     log.debug('webhook', `[xchat-decrypt] extracting conversation key from key_change_event`);
     try {
-      const { encKey, publicKeyVersion } = getOurParticipantEntry(payload.conversation_key_change_event, userId);
-      if (encKey) {
-        // Try the hinted version first, then brute-force
-        const keysToTry = publicKeyVersion && allKeysByVersion[publicKeyVersion]
-          ? [allKeysByVersion[publicKeyVersion], ...allDecryptKeys.filter(k => k !== allKeysByVersion[publicKeyVersion])]
-          : allDecryptKeys;
-        for (const dk of keysToTry) {
-          try {
-            convKey = unwrapConversationKey(encKey, dk);
-            if (convKey) break;
-          } catch {}
-        }
-        if (convKey && conversationId) {
-          await conversationKeyStorage.save({
-            id: conversationId,
-            encrypted_conversation_key: encKey,
-            key_version: payload.conversation_key_version || '',
-            cached_at: new Date().toISOString(),
-          });
-          log.info('webhook', `[xchat-decrypt] conversation key cached for ${conversationId} (version=${payload.conversation_key_version})`);
+      const entries = getOurParticipantEntries(payload.conversation_key_change_event, userId);
+      for (const { encKey, publicKeyVersion } of entries) {
+        const dk = publicKeyVersion ? allKeysByVersion[publicKeyVersion] : undefined;
+        if (!dk) continue;
+        try {
+          convKey = unwrapConversationKey(encKey, dk);
+        } catch { continue; }
+        if (convKey) {
+          if (conversationId) {
+            await conversationKeyStorage.save({
+              id: conversationId,
+              encrypted_conversation_key: encKey,
+              key_version: payload.conversation_key_version || '',
+              cached_at: new Date().toISOString(),
+            });
+            log.info('webhook', `[xchat-decrypt] conversation key cached for ${conversationId} (version=${payload.conversation_key_version})`);
+          }
+          break;
         }
       }
     } catch (e: any) {
@@ -318,12 +313,13 @@ async function decryptXChatWebhook(body: any): Promise<any> {
 }
 
 /** Extract our participant entry (encrypted_conversation_key + public_key_version) from a key_change_event */
-function getOurParticipantEntry(keyChangeEventB64: string, userId: string): { encKey: string; publicKeyVersion: string } {
+function getOurParticipantEntries(keyChangeEventB64: string, userId: string): { encKey: string; publicKeyVersion: string }[] {
   const buf = Buffer.from(keyChangeEventB64, 'base64');
   const event = decode(buf, MessageEventSchema);
   const participants = event.detail?.conversationKeyChangeEvent?.conversation_participant_keys || [];
-  const ours = participants.find((pk: any) => pk.user_id === userId);
-  return { encKey: ours?.encrypted_conversation_key || '', publicKeyVersion: ours?.public_key_version || '' };
+  return participants
+    .filter((pk: any) => pk.user_id === userId && pk.encrypted_conversation_key)
+    .map((pk: any) => ({ encKey: pk.encrypted_conversation_key, publicKeyVersion: pk.public_key_version || '' }));
 }
 
 

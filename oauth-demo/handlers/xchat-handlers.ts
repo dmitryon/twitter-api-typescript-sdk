@@ -36,6 +36,25 @@ const userXChatStorage = new UserXChatStorage();
 const juiceboxLogger = new JuiceboxCallLogger();
 const keyRecoveryHistory = new KeyRecoveryHistoryStorage();
 
+const FAILURE_TYPES: Record<number, string> = {
+  1: 'EMPTY_DETAIL', 2: 'INTERNAL_ERROR', 3: 'CONTENTS_TOO_LARGE',
+  4: 'TOO_MANY_MESSAGES', 5: 'INVALID_SENDER_SIGNATURE', 6: 'NON_LATEST_CKEY_VERSION',
+  7: 'RECIPIENT_HAS_NOT_TRUSTED_CONVERSATION', 8: 'RECIPIENT_KEY_HAS_CHANGED',
+  9: 'ONLY_ENCRYPTED_MESSAGES_ALLOWED',
+};
+
+/** Check sendChatMessage response for a thrift-encoded messageFailureEvent. Returns error string or null. */
+function checkMessageFailure(response: any): { failure_type: number; message: string } | null {
+  if (!response?.data?.encoded_message_event) return null;
+  try {
+    const respEvent = decode(Buffer.from(response.data.encoded_message_event, 'base64'), MessageEventSchema);
+    const ft = respEvent.detail?.messageFailureEvent?.failure_type;
+    if (ft == null) return null;
+    const name = FAILURE_TYPES[ft] || `UNKNOWN(${ft})`;
+    return { failure_type: ft, message: name };
+  } catch { return null; }
+}
+
 // Ensure storage directories exist
 Promise.all([userPublicKeyStorage.init(), conversationKeyStorage.init(), userXChatStorage.init(), juiceboxLogger.init(), keyRecoveryHistory.init()]).catch(() => {});
 
@@ -60,16 +79,15 @@ interface UserKeys {
 
 /** Try to unwrap a conversation key using the specified user key version, falling back to all keys. */
 function tryUnwrapConversationKey(encryptedConvKey: string, userKeys: UserKeys, publicKeyVersion?: string): { key: Buffer; decryptKeyB64: string; version: string } | null {
-  // If a specific version is hinted, try it first
+  // If a specific version is hinted, try only that version
   if (publicKeyVersion && userKeys.allKeys[publicKeyVersion]) {
     try {
       const kp = userKeys.allKeys[publicKeyVersion];
       return { key: unwrapConversationKey(encryptedConvKey, kp.decryptKeyB64), decryptKeyB64: kp.decryptKeyB64, version: publicKeyVersion };
-    } catch {}
+    } catch { return null; }
   }
-  // Brute-force all keys
+  // No version hint — try all keys (e.g. cached conversation key without version info)
   for (const [ver, kp] of Object.entries(userKeys.allKeys)) {
-    if (ver === publicKeyVersion) continue; // already tried
     try {
       return { key: unwrapConversationKey(encryptedConvKey, kp.decryptKeyB64), decryptKeyB64: kp.decryptKeyB64, version: ver };
     } catch {}
@@ -92,14 +110,18 @@ async function resolveLatestConversationKey(
         const keyEvent = decode(keyBuf, MessageEventSchema);
         const kce = keyEvent.detail?.conversationKeyChangeEvent;
         if (!kce) continue;
-        const ours = (kce.conversation_participant_keys || []).find((pk: any) => pk.user_id === userId);
-        if (!ours?.encrypted_conversation_key) continue;
-        // Verify we can actually unwrap it (use public_key_version hint from participant entry)
-        if (!tryUnwrapConversationKey(ours.encrypted_conversation_key, userKeys, ours.public_key_version)) continue;
-        const ver = kce.conversation_key_version || '';
-        if (!best || Number(ver) > Number(best.keyVersion)) {
-          best = { encryptedConvKey: ours.encrypted_conversation_key, keyVersion: ver };
+        const ours = (kce.conversation_participant_keys || []).filter((pk: any) => pk.user_id === userId && pk.encrypted_conversation_key);
+        let unwrapped = false;
+        for (const entry of ours) {
+          if (!tryUnwrapConversationKey(entry.encrypted_conversation_key, userKeys, entry.public_key_version)) continue;
+          const ver = kce.conversation_key_version || '';
+          if (!best || Number(ver) > Number(best.keyVersion)) {
+            best = { encryptedConvKey: entry.encrypted_conversation_key, keyVersion: ver };
+          }
+          unwrapped = true;
+          break;
         }
+        if (!unwrapped) continue;
       } catch {}
     }
     if (best) {
@@ -192,17 +214,19 @@ export const getXChatMessages = async (req: Request, res: Response) => {
             if (!kce) continue;
             const keyVersion = kce.conversation_key_version || '';
             const participantKeys: any[] = kce.conversation_participant_keys || [];
-            const ours = participantKeys.find((pk: any) => pk.user_id === userId);
-            if (!ours?.encrypted_conversation_key) continue;
-            try {
-              const result = tryUnwrapConversationKey(ours.encrypted_conversation_key, userKeys, ours.public_key_version);
-              if (!result) continue;
-              convKeysByVersion.set(keyVersion, result.key);
-              if (!convKey) {
-                convKey = result.key;
-                await conversationKeyStorage.save({ id: canonicalId, encrypted_conversation_key: ours.encrypted_conversation_key, key_version: keyVersion, cached_at: new Date().toISOString() });
-              }
-            } catch {}
+            const ourEntries = participantKeys.filter((pk: any) => pk.user_id === userId && pk.encrypted_conversation_key);
+            for (const ours of ourEntries) {
+              try {
+                const result = tryUnwrapConversationKey(ours.encrypted_conversation_key, userKeys, ours.public_key_version);
+                if (!result) continue;
+                convKeysByVersion.set(keyVersion, result.key);
+                if (!convKey) {
+                  convKey = result.key;
+                  await conversationKeyStorage.save({ id: canonicalId, encrypted_conversation_key: ours.encrypted_conversation_key, key_version: keyVersion, cached_at: new Date().toISOString() });
+                }
+                break;
+              } catch {}
+            }
           } catch {}
         }
         if (convKeysByVersion.size > 0) {
@@ -250,6 +274,17 @@ export const getXChatMessages = async (req: Request, res: Response) => {
             // Standalone key change events
             if (fullEvent.detail?.conversationKeyChangeEvent && !fullEvent.detail?.messageCreateEvent) {
               msg.group_event = { type: 'key_change', version: fullEvent.detail.conversationKeyChangeEvent.conversation_key_version };
+              msg.encrypted = false;
+              messages.push(msg);
+              continue;
+            }
+
+            // Delete events
+            if (fullEvent.detail?.messageDeleteEvent) {
+              msg.delete_event = {
+                sequence_ids: fullEvent.detail.messageDeleteEvent.sequence_ids || [],
+                action: fullEvent.detail.messageDeleteEvent.delete_message_action,
+              };
               msg.encrypted = false;
               messages.push(msg);
               continue;
@@ -321,9 +356,18 @@ export const getXChatMessages = async (req: Request, res: Response) => {
       // Events come newest-first from API, reverse for chronological order
       messages.reverse();
 
-      // Aggregate reactions and edits into their parent messages
+      // Aggregate reactions, edits, and deletes into their parent messages
       const messageMap = new Map<string, any>();
+      const deletedIds = new Set<string>();
       const aggregated: any[] = [];
+
+      // First pass: collect all deleted message IDs
+      for (const msg of messages) {
+        if (msg.delete_event) {
+          for (const id of msg.delete_event.sequence_ids) deletedIds.add(id);
+        }
+      }
+
       for (const msg of messages) {
         if (msg.reaction) {
           const target = messageMap.get(msg.reaction.message_sequence_id);
@@ -341,13 +385,24 @@ export const getXChatMessages = async (req: Request, res: Response) => {
         } else if (msg.edit) {
           const target = messageMap.get(msg.edit.message_sequence_id);
           if (target) {
-            target.text = msg.edit.updated_text;
-            target.entities = msg.edit.entities || null;
-            target.edited = true;
+            if (msg.sender_id === target.sender_id) {
+              target.text = msg.edit.updated_text;
+              target.entities = msg.edit.entities || null;
+              target.edited = true;
+            } else {
+              // Cross-user edit — don't apply, show as standalone grey note
+              msg.edit.cross_user = true;
+              aggregated.push(msg);
+            }
           } else {
             // Parent message not in this page — show as standalone
             aggregated.push(msg);
           }
+        } else if (msg.delete_event) {
+          // Show delete as a grey event note
+          aggregated.push(msg);
+        } else if (deletedIds.has(msg.id)) {
+          // Skip messages that were deleted
         } else if (!msg.encrypted || msg.text || msg.attachments) {
           // Regular message or decrypted message
           messageMap.set(msg.id, msg);
@@ -468,14 +523,16 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
               const keyEvent = decode(keyBuf, MessageEventSchema);
               const kce = keyEvent.detail?.conversationKeyChangeEvent;
               if (!kce) continue;
-              const ours = (kce.conversation_participant_keys || []).find((pk: any) => pk.user_id === userId);
-              if (!ours?.encrypted_conversation_key) continue;
-              if (!tryUnwrapConversationKey(ours.encrypted_conversation_key, userKeys, ours.public_key_version)) continue;
-              const ver = kce.conversation_key_version || '';
-              // Always pick the latest (highest) key version
-              if (!key_version || Number(ver) > Number(key_version)) {
-                encryptedConvKey = ours.encrypted_conversation_key;
-                key_version = ver;
+              const ourEntries = (kce.conversation_participant_keys || []).filter((pk: any) => pk.user_id === userId && pk.encrypted_conversation_key);
+              for (const ours of ourEntries) {
+                if (!tryUnwrapConversationKey(ours.encrypted_conversation_key, userKeys, ours.public_key_version)) continue;
+                const ver = kce.conversation_key_version || '';
+                // Always pick the latest (highest) key version
+                if (!key_version || Number(ver) > Number(key_version)) {
+                  encryptedConvKey = ours.encrypted_conversation_key;
+                  key_version = ver;
+                }
+                break;
               }
             } catch {}
           }
@@ -580,7 +637,14 @@ export const sendXChatMessage = async (req: Request, res: Response) => {
       encoded_message_event_signature: payload.encoded_event_signature,
       message_id,
       ...(conversation_token ? { conversation_token } : {}),
-    });
+    }) as any;
+
+    const failure = checkMessageFailure(response);
+    if (failure) {
+      log.error('xchat', `sendXChatMessage rejected: ${failure.message}`);
+      res.status(422).json({ error: `Server rejected message: ${failure.message}`, failure_type: failure.failure_type });
+      return;
+    }
 
     log.info('xchat', `Sent message to conversation ${conversationId} (message_id=${message_id})`);
     res.json(response);
@@ -872,7 +936,7 @@ function detectContentType(buf: Buffer): string | null {
 export const updateXChatSettings = async (req: Request, res: Response) => {
   try {
     const { id: integrationId } = req.params;
-    const { pin, private_key, signing_key_version, conversation_key } = req.body;
+    const { pin, conversation_key } = req.body;
 
     const userId = await resolveUserId(integrationId);
     if (!userId) {
@@ -889,11 +953,6 @@ export const updateXChatSettings = async (req: Request, res: Response) => {
       await userXChatStorage.save({ ...existing, pin });
     }
 
-    if (private_key !== undefined) {
-      const existing = await userXChatStorage.load(userId) ?? { id: userId, pin: '' };
-      await userXChatStorage.save({ ...existing, private_key, signing_key_version });
-    }
-
     if (conversation_key) {
       const { conversation_id, key, key_version } = conversation_key;
       await conversationKeyStorage.save({
@@ -906,7 +965,7 @@ export const updateXChatSettings = async (req: Request, res: Response) => {
 
     log.info('xchat', `Updated xchat settings for user ${userId} (integration ${integrationId})`);
     const xchat = await userXChatStorage.load(userId);
-    res.json({ success: true, xchat: { has_pin: !!xchat?.pin, has_private_key: !!xchat?.private_key } });
+    res.json({ success: true, xchat: { has_pin: !!xchat?.pin, has_private_key: !!(xchat?.private_keys && Object.keys(xchat.private_keys).length > 0) } });
   } catch (error: any) {
     log.error('xchat', `updateXChatSettings failed:`, error.message || error);
     res.status(500).json({ error: error.message || "Unknown error" });
@@ -926,7 +985,7 @@ export const getXChatSettings = async (req: Request, res: Response) => {
 
     const xchat = await userXChatStorage.load(userId);
     const hasPin = !!xchat?.pin;
-    const hasPrivateKey = !!(xchat?.private_keys && Object.keys(xchat.private_keys).length > 0) || !!xchat?.private_key;
+    const hasPrivateKey = !!(xchat?.private_keys && Object.keys(xchat.private_keys).length > 0);
 
     // Build per-key status
     let keyVersions: { version: string; unlocked: boolean; has_pin: boolean }[] = [];
@@ -974,18 +1033,11 @@ export const getXChatSettings = async (req: Request, res: Response) => {
 async function ensureKeys(userId: string, client: any, { force = false } = {}): Promise<UserKeys | null> {
   const xchat = await userXChatStorage.load(userId);
 
-  // Return cached keys if available (migrate old format)
+  // Return cached keys if available
   if (!force && xchat?.private_keys && Object.keys(xchat.private_keys).length > 0) {
     const versions = Object.keys(xchat.private_keys).sort((a, b) => Number(a) - Number(b));
     const latestVersion = versions[versions.length - 1];
     return { allKeys: xchat.private_keys, latestVersion, latest: xchat.private_keys[latestVersion] };
-  }
-  if (!force && xchat?.private_key) {
-    // Migrate old single-key format
-    const parsed = JSON.parse(xchat.private_key);
-    const version = parsed.keyVersion || xchat.signing_key_version || 'unknown';
-    const kp: KeyPair = { signingKeyB64: parsed.signingKeyB64, decryptKeyB64: parsed.decryptKeyB64 };
-    return { allKeys: { [version]: kp }, latestVersion: version, latest: kp };
   }
   if (!xchat?.pin) return null;
 
@@ -1025,7 +1077,7 @@ async function ensureKeys(userId: string, client: any, { force = false } = {}): 
   // Persist all recovered keys
   const versions = Object.keys(allKeys).sort((a, b) => Number(a) - Number(b));
   const latestVersion = versions[versions.length - 1];
-  await userXChatStorage.save({ ...xchat, private_keys: allKeys, signing_key_version: latestVersion });
+  await userXChatStorage.save({ ...xchat, private_keys: allKeys });
   await keyRecoveryHistory.append({ userId, timestamp: new Date().toISOString(), success: true, recovered_key_version: versions.join(',') });
   log.info('xchat', `[ensureKeys] cached ${versions.length} key version(s) for user ${userId}`);
   return { allKeys, latestVersion, latest: allKeys[latestVersion] };
@@ -1049,7 +1101,7 @@ export const unlockKeys = async (req: Request, res: Response) => {
         res.json({ success: true, unlocked: false, reason: "PIN not set or no public keys on server" });
         return;
       }
-      res.json({ success: true, unlocked: true, signing_key_version: result.latestVersion, key_count: Object.keys(result.allKeys).length });
+      res.json({ success: true, unlocked: true, key_count: Object.keys(result.allKeys).length });
     } catch (err: any) {
       log.warn('xchat', `[unlock] Juicebox recovery failed: ${err.message}`);
       await keyRecoveryHistory.append({ userId, timestamp: new Date().toISOString(), success: false, error: err.message });
@@ -1221,7 +1273,14 @@ export const reactToMessage = async (req: Request, res: Response) => {
       encoded_message_create_event: payload.encrypted_content,
       encoded_message_event_signature: payload.encoded_event_signature,
       message_id: messageId,
-    });
+    }) as any;
+
+    const failure = checkMessageFailure(response);
+    if (failure) {
+      log.error('xchat', `reactToMessage rejected: ${failure.message}`);
+      res.status(422).json({ error: `Server rejected reaction: ${failure.message}`, failure_type: failure.failure_type });
+      return;
+    }
 
     log.info('xchat', `Sent reaction ${remove ? 'remove' : 'add'} ${emoji} to ${message_sequence_id}`);
     res.json(response);
@@ -1272,7 +1331,14 @@ export const editMessage = async (req: Request, res: Response) => {
       encoded_message_create_event: payload.encrypted_content,
       encoded_message_event_signature: payload.encoded_event_signature,
       message_id: messageId,
-    });
+    }) as any;
+
+    const failure = checkMessageFailure(response);
+    if (failure) {
+      log.error('xchat', `editMessage rejected: ${failure.message}`);
+      res.status(422).json({ error: `Server rejected edit: ${failure.message}`, failure_type: failure.failure_type });
+      return;
+    }
 
     log.info('xchat', `Edited message ${message_sequence_id}`);
     res.json(response);
@@ -1329,7 +1395,14 @@ export const deleteMessage = async (req: Request, res: Response) => {
       encoded_message_create_event: detailThrift.toString('base64'),
       encoded_message_event_signature: sigThrift.toString('base64'),
       message_id: messageId,
-    });
+    }) as any;
+
+    const failure = checkMessageFailure(response);
+    if (failure) {
+      log.error('xchat', `deleteMessage rejected: ${failure.message}`);
+      res.status(422).json({ error: `Server rejected delete: ${failure.message}`, failure_type: failure.failure_type });
+      return;
+    }
 
     log.info('xchat', `Deleted message ${message_sequence_id} (for_all=${for_all !== false})`);
     res.json(response);
@@ -1487,7 +1560,6 @@ export const registerKeys = async (req: Request, res: Response) => {
     await userXChatStorage.save({
       ...xchat,
       private_keys: updatedKeys,
-      signing_key_version: version,
     });
 
     log.info('xchat', `[register] keys generated and cached for user ${userId}`);
