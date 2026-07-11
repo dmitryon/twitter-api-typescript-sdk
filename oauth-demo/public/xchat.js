@@ -288,13 +288,23 @@ window.XChatUI = (() => {
           }
           return;
         }
-        // Handle edits — apply to target message
+        // Handle edits — apply only if same sender, otherwise show as standalone
         if (dec.edit) {
           const target = state.messages.find(m => m.id === dec.edit.message_sequence_id);
-          if (target) {
+          const editSender = payload.sender_id || dec.sender_id;
+          if (target && target.sender_id === editSender) {
             target.text = dec.edit.updated_text;
             target.entities = dec.edit.entities || null;
             target.edited = true;
+            renderMessages(undefined, { scrollToBottom: false });
+          } else {
+            // Cross-user edit or orphan — show as standalone event
+            state.messages.push({
+              id: payload.id || Date.now().toString(),
+              sender_id: editSender,
+              created_at: new Date().toISOString(),
+              edit: { ...dec.edit, cross_user: !!(target && target.sender_id !== editSender) },
+            });
             renderMessages(undefined, { scrollToBottom: false });
           }
           return;
@@ -370,11 +380,19 @@ window.XChatUI = (() => {
               ${renderUser(m.sender_id, isSelf)} ${m.reaction.action === 'add' ? 'reacted' : 'unreacted'} ${m.reaction.emoji}
             </div>`;
           }
-          // Standalone edit (parent not in page)
+          // Standalone edit (parent not in page or cross-user)
           if (m.edit) {
+            const label = m.edit.cross_user ? 'tried to edit another user\'s message' : 'edited a message';
             return `<div class="xchat-message xchat-msg-event">
               <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''}</span>
-              ${renderUser(m.sender_id, isSelf)} edited a message: "${escapeHtml(m.edit.updated_text || '')}"
+              ${renderUser(m.sender_id, isSelf)} ${label}: "${escapeHtml(m.edit.updated_text || '')}"
+            </div>`;
+          }
+          // Delete events
+          if (m.delete_event) {
+            return `<div class="xchat-message xchat-msg-event">
+              <span class="xchat-msg-time">${m.created_at ? new Date(m.created_at).toLocaleString() : ''}</span>
+              🗑️ ${renderUser(m.sender_id, isSelf)} deleted a message
             </div>`;
           }
           // Group membership events
